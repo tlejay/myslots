@@ -1,0 +1,19 @@
+node_modules
+.next
+out
+build
+
+# Never commit real credentials — .env.example is the only env file tracked.
+.env
+.env.*
+!.env.example
+
+.DS_Store
+*.pem
+*.p12
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.vercel
+next-env.d.ts
+tsconfig.tsbuildinfo
