@@ -33,6 +33,11 @@ interface FormData {
 
 type Step = 'pick' | 'details' | 'confirmed'
 
+// Mirrors the check the booking endpoint runs; the server stays the authority.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+const MAX_GUESTS = 10
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] // indexed by getDay()
@@ -108,6 +113,8 @@ export function BookingFlow() {
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [selectedSlot, setSelectedSlot] = useState<SelectedSlot | null>(null)
   const [form, setForm] = useState<FormData>({ name: '', email: '', topic: '' })
+  // Empty until someone asks for a guest field — the row only exists on request.
+  const [guests, setGuests] = useState<string[]>([])
   // Remembers how many tiles the grid last held, so the loading skeleton keeps
   // the card at the same height instead of collapsing between fetches.
   const [skeletonCount, setSkeletonCount] = useState(12)
@@ -168,15 +175,26 @@ export function BookingFlow() {
     if (n > 0) setSkeletonCount(n)
   }, [loadingDays, rangeData, selectedDay])
 
+  // Blank rows are ignored; duplicates and the booker's own address are dropped
+  // so nobody receives the invite twice.
+  const cleanGuests = Array.from(
+    new Set(
+      guests
+        .map(g => g.trim().toLowerCase())
+        .filter(g => g && g !== form.email.trim().toLowerCase())
+    )
+  )
+  const guestsValid = guests.every(g => !g.trim() || EMAIL_RE.test(g.trim()))
+
   const handleBook = async () => {
-    if (!selectedSlot || !form.name.trim() || !form.email.trim()) return
+    if (!selectedSlot || !form.name.trim() || !form.email.trim() || !guestsValid) return
     setBooking(true)
     setBookError(null)
     try {
       const res = await fetch('/api/book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startTime: selectedSlot.iso, duration, ...form }),
+        body: JSON.stringify({ startTime: selectedSlot.iso, duration, ...form, guests: cleanGuests }),
       })
       if (!res.ok) throw new Error()
       setStep('confirmed')
@@ -212,6 +230,12 @@ export function BookingFlow() {
               <DetailRow label="Time" value={`${fmtSlot(selectedSlot.iso)} (${TIME_ZONE_LABEL})`} />
               <DetailRow label="Duration" value={`${duration} minutes`} />
               {form.topic && <DetailRow label="Topic" value={form.topic} />}
+              {cleanGuests.length > 0 && (
+                <DetailRow
+                  label={cleanGuests.length === 1 ? 'Guest' : 'Guests'}
+                  value={cleanGuests.join(', ')}
+                />
+              )}
             </div>
             <button
               onClick={() => window.location.reload()}
@@ -249,12 +273,12 @@ export function BookingFlow() {
           </div>
 
           <div className="space-y-4">
-            <FormField label="Your Name" required>
+            <FormField label="Your Nickname" required>
               <input
                 type="text"
                 value={form.name}
                 onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                placeholder="Firstname Lastname"
+                placeholder="John"
                 className="w-full px-4 py-3 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
               />
             </FormField>
@@ -267,6 +291,57 @@ export function BookingFlow() {
                 className="w-full px-4 py-3 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
               />
             </FormField>
+
+            {guests.length > 0 && (
+              <FormField label={guests.length === 1 ? 'Guest' : 'Guests'}>
+                <div className="space-y-2">
+                  {guests.map((guest, i) => {
+                    const invalid = Boolean(guest.trim()) && !EMAIL_RE.test(guest.trim())
+                    return (
+                      <div key={i} className="flex items-center gap-2">
+                        <input
+                          type="email"
+                          value={guest}
+                          autoFocus={i === guests.length - 1}
+                          onChange={e =>
+                            setGuests(g => g.map((v, j) => (j === i ? e.target.value : v)))
+                          }
+                          placeholder="guest@example.com"
+                          className={`flex-1 min-w-0 px-4 py-3 rounded-xl bg-[var(--color-surface)] border text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none transition-colors ${
+                            invalid
+                              ? 'border-red-400/60 focus:border-red-400'
+                              : 'border-[var(--color-border)] focus:border-[var(--color-accent)]'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setGuests(g => g.filter((_, j) => j !== i))}
+                          aria-label={`Remove guest ${i + 1}`}
+                          className="shrink-0 w-11 h-11 rounded-xl border border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-foreground)] hover:border-[var(--color-border-light)] flex items-center justify-center transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </FormField>
+            )}
+
+            {guests.length < MAX_GUESTS && (
+              <button
+                type="button"
+                onClick={() => setGuests(g => [...g, ''])}
+                className="flex items-center gap-1.5 text-sm text-[var(--color-accent)] hover:opacity-80 transition-opacity"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+                </svg>
+                Add guest
+              </button>
+            )}
             <FormField label="What would you like to discuss?">
               <input
                 type="text"
@@ -286,14 +361,15 @@ export function BookingFlow() {
 
           <button
             onClick={handleBook}
-            disabled={booking || !form.name.trim() || !form.email.trim()}
+            disabled={booking || !form.name.trim() || !form.email.trim() || !guestsValid}
             className="w-full py-3.5 rounded-full bg-[var(--color-accent)] text-white font-semibold text-sm hover:opacity-90 disabled:opacity-40 transition-opacity"
           >
             {booking ? 'Booking...' : 'Confirm Booking →'}
           </button>
 
           <p className="text-xs text-center text-[var(--color-muted)]">
-            A Google Calendar invite will be sent to both you and {HOST_NAME}.
+            A Google Calendar invite will be sent to {HOST_NAME}, you{cleanGuests.length > 0 &&
+              ` and ${cleanGuests.length} guest${cleanGuests.length === 1 ? '' : 's'}`}.
           </p>
         </div>
       </PageShell>

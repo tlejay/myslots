@@ -9,7 +9,7 @@ component; the whole thing is under 800 lines.
 
 ![The booking page](docs/screenshot.png)
 
-<sub>Also: [dark theme](docs/screenshot-dark.png) · [confirmation screen](docs/screenshot-confirmed.png)</sub>
+<sub>Also: [dark theme](docs/screenshot-dark.png) · [details form](docs/screenshot-form.png) · [confirmation screen](docs/screenshot-confirmed.png)</sub>
 
 ---
 
@@ -30,6 +30,10 @@ actually arrive with, in order:
 Once a time is chosen, the confirm bar sticks to the bottom of the viewport, and
 the layout holds its height with skeletons while availability reloads — changing
 the meeting length never makes the page jump under the cursor.
+
+On the details form, **Add guest** reveals an email row on demand — nothing takes
+up space until someone actually wants it — and every guest is added to the
+calendar invite, so Google emails them all at once.
 
 ---
 
@@ -165,13 +169,14 @@ The client fetches all seven visible days in parallel and counts the
 ### `POST /api/book`
 
 ```jsonc
-// request
+// request — `topic` and `guests` are optional
 {
   "startTime": "2026-09-01T02:00:00.000Z",
   "duration": 60,
-  "name": "Sam Rivera",
-  "email": "sam@example.com",
-  "topic": "Intro call"
+  "name": "John",
+  "email": "john@example.com",
+  "topic": "Intro call",
+  "guests": ["sam@example.com", "dana@example.com"]
 }
 
 // 200
@@ -180,12 +185,16 @@ The client fetches all seven visible days in parallel and counts the
 
 Because the endpoint is public it re-validates every request server-side before
 writing: the email must be well formed, the duration must be one you offer, the
-time must be in the future and inside working hours, and a second free/busy
+time must be in the future and inside working hours, every guest address must
+parse, there may be at most `MAX_GUESTS` (10) of them, and a second free/busy
 check must still show the slot open. A slot taken between page load and submit
 returns **409** rather than double-booking you.
 
+Guests are lowercased and de-duplicated, and the booker's own address and the
+host calendar are dropped from the list so nobody is invited twice.
+
 On success it inserts the event with `sendUpdates: 'all'`, so Google emails the
-invite to both of you.
+invite to the host, the booker, and every guest.
 
 ---
 

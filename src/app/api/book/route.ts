@@ -8,20 +8,45 @@ interface BookingRequest {
   name: string
   email: string
   topic?: string
+  guests?: string[]
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/** Every guest is a person Google will email, so the list is capped. */
+const MAX_GUESTS = 10
+
+/** Trimmed, lowercased, de-duplicated, and never the booker or the host again. */
+function normaliseGuests(guests: string[] | undefined, bookerEmail: string): string[] {
+  if (!guests) return []
+  const taken = new Set([bookerEmail.trim().toLowerCase(), CALENDAR_ID.toLowerCase()])
+  const out: string[] = []
+  for (const raw of guests) {
+    const email = String(raw).trim().toLowerCase()
+    if (!email || taken.has(email)) continue
+    taken.add(email)
+    out.push(email)
+  }
+  return out
+}
 
 /**
  * The browser only ever offers legal slots, but the endpoint is public — so it
  * re-checks the request against working hours and the calendar before writing.
  */
 function validate(body: BookingRequest): string | null {
-  const { startTime, duration, name, email } = body
+  const { startTime, duration, name, email, guests } = body
 
   if (!startTime || !name?.trim() || !email?.trim()) return 'Missing required fields'
   if (!EMAIL_RE.test(email.trim())) return 'Invalid email address'
   if (!(DURATIONS as readonly number[]).includes(duration)) return 'Unsupported meeting length'
+
+  if (guests !== undefined) {
+    if (!Array.isArray(guests)) return 'Guests must be a list of email addresses'
+    if (guests.length > MAX_GUESTS) return `At most ${MAX_GUESTS} guests`
+    const bad = guests.map(g => String(g).trim()).filter(g => g && !EMAIL_RE.test(g))
+    if (bad.length > 0) return `Invalid guest email: ${bad[0]}`
+  }
 
   const start = new Date(startTime)
   if (Number.isNaN(start.getTime())) return 'Invalid start time'
@@ -60,6 +85,7 @@ export async function POST(request: NextRequest) {
   if (problem) return NextResponse.json({ error: problem }, { status: 400 })
 
   const { startTime, duration, name, email, topic } = body
+  const guestEmails = normaliseGuests(body.guests, email)
   const start = new Date(startTime)
   const end = new Date(start.getTime() + duration * 60_000)
 
@@ -86,6 +112,7 @@ export async function POST(request: NextRequest) {
         attendees: [
           { email: CALENDAR_ID, responseStatus: 'accepted' },
           { email: email.trim(), displayName: name.trim() },
+          ...guestEmails.map(guest => ({ email: guest })),
         ],
       },
     })
