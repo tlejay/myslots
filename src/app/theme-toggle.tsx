@@ -1,45 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 type Theme = "dark" | "light";
 
-function readInitialTheme(): Theme {
-  if (typeof document === "undefined") return "dark";
+/**
+ * The `light` class on <html> is the single source of truth — it is set before
+ * paint by the script in layout.tsx. Watching it beats mirroring it into state:
+ * the button stays right no matter who changed the theme, and nothing has to be
+ * re-synchronised on mount.
+ */
+function subscribe(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+
+function readTheme(): Theme {
   return document.documentElement.classList.contains("light") ? "light" : "dark";
 }
 
+/** Dark is what the server renders, and what the button shows until hydration. */
+function serverTheme(): Theme {
+  return "dark";
+}
+
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("dark");
-  const [mounted, setMounted] = useState(false);
+  const theme = useSyncExternalStore(subscribe, readTheme, serverTheme);
 
-  useEffect(() => {
-    setMounted(true);
-    setTheme(readInitialTheme());
-  }, []);
-
+  // No local state to update — flipping the class notifies the subscription.
   const toggle = () => {
     const next: Theme = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    const root = document.documentElement;
-    if (next === "light") {
-      root.classList.add("light");
-    } else {
-      root.classList.remove("light");
-    }
+    document.documentElement.classList.toggle("light", next === "light");
     try {
       localStorage.setItem("theme", next);
     } catch {
-      // localStorage may be blocked — fall through; class is the source of truth for this session.
+      // localStorage may be blocked — the class still carries this session.
     }
   };
 
   const isLight = theme === "light";
-  const label = mounted
-    ? isLight
-      ? "Switch to dark mode"
-      : "Switch to light mode"
-    : "Toggle theme";
+  const label = isLight ? "Switch to dark mode" : "Switch to light mode";
 
   return (
     <button
@@ -62,7 +63,7 @@ export function ThemeToggle() {
         strokeLinejoin="round"
         aria-hidden="true"
         className={`absolute transition-all duration-300 ${
-          mounted && isLight ? "opacity-0 rotate-90 scale-75" : "opacity-100 rotate-0 scale-100"
+          isLight ? "opacity-0 rotate-90 scale-75" : "opacity-100 rotate-0 scale-100"
         }`}
       >
         <circle cx="12" cy="12" r="4" />
@@ -88,7 +89,7 @@ export function ThemeToggle() {
         strokeLinejoin="round"
         aria-hidden="true"
         className={`absolute transition-all duration-300 ${
-          mounted && isLight ? "opacity-100 rotate-0 scale-100" : "opacity-0 -rotate-90 scale-75"
+          isLight ? "opacity-100 rotate-0 scale-100" : "opacity-0 -rotate-90 scale-75"
         }`}
       >
         <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />

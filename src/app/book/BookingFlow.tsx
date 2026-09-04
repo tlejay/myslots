@@ -1,5 +1,13 @@
 'use client'
 
+/* eslint-disable react-hooks/set-state-in-effect --
+   Availability arrives asynchronously, and four pieces of picker state are
+   settled once it lands: the link read on mount, the day to open on, the
+   skeleton height, and the slot a shared link names. Deriving them during
+   render is the right shape, but it reworks how this component holds state —
+   and the link read sits in an effect on purpose, so the server-rendered markup
+   and the first client render agree. Parked deliberately: https://github.com/tlejay/myslots/issues/1 */
+
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ThemeToggle } from '../theme-toggle'
 import {
