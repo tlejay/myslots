@@ -41,7 +41,12 @@ const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECR
 const authUrl = oauth2Client.generateAuthUrl({
   access_type: 'offline',
   prompt: 'consent', // forces a refresh_token even if you have approved before
-  scope: ['https://www.googleapis.com/auth/calendar'],
+  scope: [
+    'https://www.googleapis.com/auth/calendar',
+    // Lets the app email you when someone books. Google never notifies the
+    // account that created an event, so the host would hear nothing otherwise.
+    'https://www.googleapis.com/auth/gmail.send',
+  ],
 })
 
 const server = createServer(async (req, res) => {

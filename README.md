@@ -37,6 +37,64 @@ calendar invite, so Google emails them all at once.
 
 ---
 
+## The email Google will not send you
+
+Google emails an invite to every attendee **except the account that created the
+event** — and a self-hosted booking page creates events with your own
+credentials. Every guide to building one of these stops there, which is why they
+all share the same quiet failure: a stranger books you, and the first you hear
+of it is a meeting sitting in your calendar that you never saw arrive.
+
+So MySlots mails you itself, through the Gmail API, on the same OAuth consent it
+already uses to read your calendar. No SMTP server, no transactional-email
+vendor, no second account to keep alive.
+
+![The notification that lands when someone books](docs/booking-email.png)
+
+Everything you need to decide whether to prepare is in the one card — who booked,
+what they want to talk about, who else is coming — and `Reply-To` is set to the
+booker, so answering them is one keystroke rather than a copy-paste.
+
+**Failures get a letter too.** If the calendar write throws, the visitor sees an
+error and walks away; without this, so does the meeting.
+
+![The alert that lands when the event could not be created](docs/booking-email-failure.png)
+
+Sending is best-effort by design: a booking that reached your calendar is never
+reported as failed because Gmail was unhappy. Problems are logged instead, and
+the most common one — a refresh token minted before the `gmail.send` scope
+existed — logs the exact fix.
+
+> Both pictures are rendered from
+> [`src/lib/booking-email-template.ts`](src/lib/booking-email-template.ts) by
+> `pnpm mockup`, so the README cannot drift away from the mail that actually
+> goes out.
+
+---
+
+## Links you can hand out
+
+The picker keeps its whole state in the query string, so any view you are looking
+at is a link you can send:
+
+```
+https://your-domain.com/?date=2026-10-09&duration=30&time=14:00
+```
+
+| Param | Meaning |
+|---|---|
+| `date` | `YYYY-MM-DD`. A day in the past or beyond `MAX_DAYS_AHEAD` falls back to the default view |
+| `duration` | One of the meeting lengths in `config.ts` — 30, 60 or 90 by default |
+| `time` | `HH:MM` in the host's zone. Opens with that slot already selected, if it is still free |
+
+The address bar follows every day, length and slot you click, and a **Copy link**
+button sits beside the slot count. Nothing is pre-generated: no routes, no
+tokens, no stored links — just the state the page is already in. Updates go
+through `history.replaceState`, so Back still returns visitors to wherever they
+came from rather than walking them through every tile they tried.
+
+---
+
 ## Quick start
 
 ```bash
@@ -83,7 +141,12 @@ minutes, once.
 3. Fill in the app name and your email. You do **not** need to submit for
    verification — while the app is in *Testing*, add your own Google account
    under **Test users** and it will work indefinitely for you.
-4. Add the scope `https://www.googleapis.com/auth/calendar`.
+4. Add two scopes:
+   - `https://www.googleapis.com/auth/calendar` — read free/busy, write events
+   - `https://www.googleapis.com/auth/gmail.send` — mail you when someone books
+
+> `gmail.send` is only used to send you the notification above. Skip it and
+> everything else still works; the app just logs that it could not tell you.
 
 > A *Testing* app issues refresh tokens that expire after 7 days. If you would
 > rather not re-mint weekly, click **Publish app** on the consent screen. For an
@@ -194,7 +257,8 @@ Guests are lowercased and de-duplicated, and the booker's own address and the
 host calendar are dropped from the list so nobody is invited twice.
 
 On success it inserts the event with `sendUpdates: 'all'`, so Google emails the
-invite to the host, the booker, and every guest.
+invite to the booker and every guest — then sends the host the notification
+Google leaves out.
 
 ---
 
@@ -209,7 +273,8 @@ vercel
 
 Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` and
 `GOOGLE_CALENDAR_ID` under **Project → Settings → Environment Variables**, then
-redeploy. The OAuth redirect URI stays `http://localhost:5789/oauth2callback` —
+redeploy. `NOTIFY_EMAIL` is optional — set it to send booking notifications
+somewhere other than the calendar's own address. The OAuth redirect URI stays `http://localhost:5789/oauth2callback` —
 it is only ever used by `pnpm token` on your own machine, never in production.
 
 ---
@@ -259,8 +324,11 @@ src/
     config.ts                     everything you are likely to change
     google-calendar.ts            OAuth client, demo-mode detection
     demo-availability.ts          synthetic busy blocks, no credentials needed
+    booking-email.ts              sends the host notification through Gmail
+    booking-email-template.ts     the markup of that email, on its own
 scripts/
   get-refresh-token.mjs           pnpm token
+  render-email-mockup.mjs         pnpm mockup — the README's email pictures
 ```
 
 ## License

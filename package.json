@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "token": "node scripts/get-refresh-token.mjs"
+    "token": "node scripts/get-refresh-token.mjs",
+    "mockup": "node scripts/render-email-mockup.mjs"
   },
   "dependencies": {
     "googleapis": "^171.4.0",

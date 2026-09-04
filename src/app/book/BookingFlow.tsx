@@ -93,6 +93,50 @@ function countAvailable(slots: DaySlots | undefined): number {
   return slots ? slots.filter(s => s.reason === 'available').length : 0
 }
 
+// ─── Shareable link ───────────────────────────────────────────────────────────
+// The picker keeps its whole state in the query string — ?date=2026-10-09
+// &duration=60&time=14:00 — so any view can be copied and sent to someone
+// without a route having to exist for it.
+
+const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/
+const TIME_PARAM_RE = /^\d{2}:\d{2}$/
+
+interface UrlState {
+  dateKey: string | null
+  duration: Duration | null
+  time: string | null
+}
+
+function readUrlState(search: string, today: Date): UrlState {
+  const params = new URLSearchParams(search)
+
+  const rawDate = params.get('date') ?? ''
+  const day = DATE_PARAM_RE.test(rawDate) ? new Date(`${rawDate}T00:00:00`) : null
+  // A link to a day that has passed — or is beyond the booking horizon — falls
+  // back to the default view rather than showing an empty strip.
+  const dateKey =
+    day && !Number.isNaN(day.getTime()) && day >= today && day <= addDays(today, MAX_DAYS_AHEAD - 1)
+      ? toDateKey(day)
+      : null
+
+  const rawDuration = Number(params.get('duration'))
+  const duration = (DURATIONS as readonly number[]).includes(rawDuration)
+    ? (rawDuration as Duration)
+    : null
+
+  const rawTime = params.get('time') ?? ''
+
+  return { dateKey, duration, time: dateKey && TIME_PARAM_RE.test(rawTime) ? rawTime : null }
+}
+
+// Written by hand rather than through URLSearchParams so the colon in the time
+// stays a colon — a link meant to be read and pasted should look like one.
+// Every value here is produced by the picker, so none of it needs escaping.
+function buildUrl(dateKey: string, duration: Duration, time: string | null): string {
+  const query = `date=${dateKey}&duration=${duration}${time ? `&time=${time}` : ''}`
+  return `${window.location.pathname}?${query}`
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function BookingFlow() {
@@ -122,6 +166,25 @@ export function BookingFlow() {
   const [bookError, setBookError] = useState<string | null>(null)
 
   const fetchVersion = useRef(0)
+  // The link is read once on mount and written from then on; until that first
+  // read lands, writing would overwrite the very link that was opened.
+  const urlRead = useRef(false)
+  // A time named by the link, held until that day's slots come back.
+  const [pendingTime, setPendingTime] = useState<string | null>(null)
+
+  // Applied in an effect rather than in the initial state, so the server-rendered
+  // markup and the first client render stay identical.
+  useEffect(() => {
+    const url = readUrlState(window.location.search, today)
+    if (url.duration) setDuration(url.duration)
+    if (url.dateKey) {
+      // The strip starts on the shared day, so it is the first tile people see.
+      setRangeStart(new Date(`${url.dateKey}T00:00:00`))
+      setSelectedDay(url.dateKey)
+    }
+    setPendingTime(url.time)
+    urlRead.current = true
+  }, [today])
 
   const loadRange = useCallback(async (from: Date, dur: Duration) => {
     const version = ++fetchVersion.current
@@ -174,6 +237,32 @@ export function BookingFlow() {
     const n = countAvailable(rangeData.get(selectedDay))
     if (n > 0) setSkeletonCount(n)
   }, [loadingDays, rangeData, selectedDay])
+
+  // A shared link can name a time too; select it as soon as that day's slots
+  // arrive. If the slot was taken in the meantime the day still opens, just
+  // with nothing selected.
+  useEffect(() => {
+    // `loadingDays` still holds the previous range's keys until the fetch for
+    // the shared day even starts, so waiting on that key alone would give up
+    // before the day had loaded. The day's own entry appearing is the signal.
+    if (!pendingTime || !selectedDay) return
+    if (loadingDays.size > 0 || !rangeData.has(selectedDay)) return
+    const slot = (rangeData.get(selectedDay) ?? [])
+      .find(s => s.reason === 'available' && s.display === pendingTime)
+    if (slot) setSelectedSlot({ iso: slot.iso, dateKey: selectedDay })
+    setPendingTime(null)
+  }, [pendingTime, selectedDay, loadingDays, rangeData])
+
+  // Keep the address bar in step with the picker so whatever is on screen is
+  // what gets copied. replaceState leaves the back button pointing at wherever
+  // the visitor came from instead of at every tile they tried.
+  useEffect(() => {
+    if (!urlRead.current || !selectedDay || pendingTime) return
+    window.history.replaceState(
+      null, '',
+      buildUrl(selectedDay, duration, selectedSlot ? fmtSlot(selectedSlot.iso) : null),
+    )
+  }, [selectedDay, duration, selectedSlot, pendingTime])
 
   // Blank rows are ignored; duplicates and the booker's own address are dropped
   // so nobody receives the invite twice.
@@ -568,9 +657,12 @@ export function BookingFlow() {
                   <p className="text-sm font-semibold">
                     {fmtLong(daySlots[0]?.iso ?? new Date(`${selectedDay}T12:00:00${UTC_OFFSET}`).toISOString())}
                   </p>
-                  <p className="text-xs text-[var(--color-muted)]">
-                    {openSlots.length} slot{openSlots.length === 1 ? '' : 's'} available
-                  </p>
+                  <div className="flex items-center gap-3">
+                    <p className="text-xs text-[var(--color-muted)]">
+                      {openSlots.length} slot{openSlots.length === 1 ? '' : 's'} available
+                    </p>
+                    <CopyLinkButton />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
@@ -626,6 +718,47 @@ export function BookingFlow() {
         </div>
       )}
     </PageShell>
+  )
+}
+
+// Copies whatever the address bar currently holds — the day, the length, and
+// the time if one is picked — so the link lands the next person on this view.
+function CopyLinkButton() {
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard access can be refused (older browsers, insecure origins);
+      // the address bar still holds the link, so there is nothing to recover.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="flex items-center gap-1 text-xs font-medium text-[var(--color-muted)] hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+    >
+      {copied ? (
+        <>
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+          </svg>
+          Copied
+        </>
+      ) : (
+        <>
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+          </svg>
+          Copy link
+        </>
+      )}
+    </button>
   )
 }
 

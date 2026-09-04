@@ -12,7 +12,8 @@ export const isCalendarConfigured = Boolean(CLIENT_ID && CLIENT_SECRET && REFRES
 
 export const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID ?? 'primary'
 
-const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET)
+/** Shared across every Google call — one consent covers Calendar and Gmail. */
+export const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET)
 oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN })
 
 export const calendar = google.calendar({ version: 'v3', auth: oauth2Client })

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { calendar, CALENDAR_ID, isCalendarConfigured } from '@/lib/google-calendar'
 import { DURATIONS, HOST_NAME, TIME_ZONE, hoursFor } from '@/lib/config'
+import { notifyBookingCreated, notifyBookingFailed, type BookingSummary } from '@/lib/booking-email'
 
 interface BookingRequest {
   startTime: string
@@ -89,9 +90,20 @@ export async function POST(request: NextRequest) {
   const start = new Date(startTime)
   const end = new Date(start.getTime() + duration * 60_000)
 
-  // Demo mode: pretend it worked, but never send an invite to a real person.
+  // Demo mode: pretend it worked, but never send an invite — or a notification
+  // — to a real person.
   if (!isCalendarConfigured) {
     return NextResponse.json({ success: true, demo: true })
+  }
+
+  const summary: BookingSummary = {
+    name: name.trim(),
+    email: email.trim(),
+    topic: topic?.trim() ?? '',
+    guests: guestEmails,
+    start,
+    end,
+    duration,
   }
 
   try {
@@ -99,7 +111,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'That slot was just taken' }, { status: 409 })
     }
 
-    await calendar.events.insert({
+    const created = await calendar.events.insert({
       calendarId: CALENDAR_ID,
       sendUpdates: 'all',
       requestBody: {
@@ -117,9 +129,14 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // Google tells the guests. Nobody tells the host, so we do.
+    await notifyBookingCreated(summary, created.data.htmlLink)
+
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error('Booking failed:', err)
+    // A booking that vanishes silently is worse than one that fails loudly.
+    await notifyBookingFailed(summary, err)
     return NextResponse.json({ error: 'Booking failed' }, { status: 500 })
   }
 }
