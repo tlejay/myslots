@@ -192,7 +192,8 @@ export function FindSlots({
                   autoFocus
                   onChange={e => { setCustomMinutes(e.target.value); setCopyState('idle') }}
                   aria-label="Custom meeting length in minutes"
-                  className={`w-20 px-3 py-1.5 rounded-full bg-[var(--color-surface)] border text-center tabular-nums focus:outline-none transition-colors ${
+                  // 16px: iOS Safari zooms into any smaller field on focus and stays zoomed.
+                  className={`w-20 px-3 py-1.5 text-base rounded-full bg-[var(--color-surface)] border text-center tabular-nums focus:outline-none transition-colors ${
                     customValid
                       ? 'border-[var(--color-border)] focus:border-[var(--color-accent)]'
                       : 'border-red-400/60 focus:border-red-400'
@@ -328,6 +329,7 @@ function DateField({
   return (
     // min-w-0 all the way down: iOS Safari gives a date input an intrinsic
     // width wider than half a phone, which otherwise spills into the next field.
+    // Text stays at 16px, or Safari zooms in on focus and never zooms back.
     <label className="block min-w-0 space-y-1">
       <span className="text-xs text-[var(--color-muted-light)]">{label}</span>
       <input
@@ -336,7 +338,7 @@ function DateField({
         min={min}
         max={max}
         onChange={e => onChange(e.target.value)}
-        className="block w-full min-w-0 appearance-none px-3 py-2 min-h-10 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-sm text-left [&::-webkit-date-and-time-value]:text-left text-[var(--color-foreground)] tabular-nums focus:outline-none focus:border-[var(--color-accent)] transition-colors"
+        className="block w-full min-w-0 appearance-none px-3 py-2 min-h-10 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-base text-left [&::-webkit-date-and-time-value]:text-left text-[var(--color-foreground)] tabular-nums focus:outline-none focus:border-[var(--color-accent)] transition-colors"
       />
     </label>
   )
