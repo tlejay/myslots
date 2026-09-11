@@ -15,6 +15,8 @@ and an invite in every inbox. No SaaS, no seats, no account for them to create.
 [![Tailwind CSS v4](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-googleapis%20only-10b981)](package.json)
 
+**[▶ Try the live demo](https://myslots-demo.vercel.app)** — a synthetic calendar, so book away; nobody gets an invite.
+
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Ftlejay%2Fmyslots&project-name=myslots&repository-name=myslots)
 
 [Features](#-what-you-get) · [Quick start](#quick-start) · [Connect Google Calendar](#connect-your-google-calendar) · [How it works](#how-it-works) · [Deploy](#deploy)
