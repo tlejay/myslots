@@ -1,16 +1,10 @@
 'use client'
 
-/* eslint-disable react-hooks/set-state-in-effect --
-   Availability arrives asynchronously, and four pieces of picker state are
-   settled once it lands: the link read on mount, the day to open on, the
-   skeleton height, and the slot a shared link names. Deriving them during
-   render is the right shape, but it reworks how this component holds state —
-   and the link read sits in an effect on purpose, so the server-rendered markup
-   and the first client render agree. Parked deliberately: https://github.com/tlejay/myslots/issues/1 */
-
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { ThemeToggle } from '../theme-toggle'
+import { FindSlots } from './FindSlots'
 import {
+  ADD_GOOGLE_MEET,
   BRAND_NAME,
   DEFAULT_DURATION,
   DURATIONS,
@@ -37,6 +31,12 @@ interface FormData {
   name: string
   email: string
   topic: string
+}
+
+interface Booked {
+  iso: string
+  duration: Duration
+  meetLink: string | null
 }
 
 type Step = 'pick' | 'details' | 'confirmed'
@@ -66,6 +66,10 @@ function addDays(d: Date, n: number): Date {
 
 function toDateKey(d: Date): string {
   return d.toLocaleDateString('en-CA')
+}
+
+function fromDateKey(key: string): Date {
+  return new Date(`${key}T00:00:00`)
 }
 
 function fmtRangeHeader(from: Date): string {
@@ -102,8 +106,8 @@ function countAvailable(slots: DaySlots | undefined): number {
 }
 
 // ─── Shareable link ───────────────────────────────────────────────────────────
-// The picker keeps its whole state in the query string — ?date=2026-10-09
-// &duration=60&time=14:00 — so any view can be copied and sent to someone
+// The picker keeps its whole state in the query string — /book?date=2026-09-10
+// &duration=60&time=14:00 — so any view can be copied and sent to someone else
 // without a route having to exist for it.
 
 const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -115,13 +119,15 @@ interface UrlState {
   time: string | null
 }
 
+const NO_LINK: UrlState = { dateKey: null, duration: null, time: null }
+
 function readUrlState(search: string, today: Date): UrlState {
   const params = new URLSearchParams(search)
 
   const rawDate = params.get('date') ?? ''
-  const day = DATE_PARAM_RE.test(rawDate) ? new Date(`${rawDate}T00:00:00`) : null
-  // A link to a day that has passed — or is beyond the booking horizon — falls
-  // back to the default view rather than showing an empty strip.
+  const day = DATE_PARAM_RE.test(rawDate) ? fromDateKey(rawDate) : null
+  // A link to a day that has already passed — or is past the booking horizon —
+  // drops back to the default view rather than showing an empty strip.
   const dateKey =
     day && !Number.isNaN(day.getTime()) && day >= today && day <= addDays(today, MAX_DAYS_AHEAD - 1)
       ? toDateKey(day)
@@ -138,32 +144,53 @@ function readUrlState(search: string, today: Date): UrlState {
 }
 
 // Written by hand rather than through URLSearchParams so the colon in the time
-// stays a colon — a link meant to be read and pasted should look like one.
-// Every value here is produced by the picker, so none of it needs escaping.
+// stays a colon — a link people are meant to read and paste should look like
+// one. Every value here is produced by the picker, so none of it needs escaping.
 function buildUrl(dateKey: string, duration: Duration, time: string | null): string {
   const query = `date=${dateKey}&duration=${duration}${time ? `&time=${time}` : ''}`
   return `${window.location.pathname}?${query}`
 }
 
+// ─── Hydration ────────────────────────────────────────────────────────────────
+// The page is prerendered, so the server knows neither the visitor's today nor
+// their link. Until hydration is done the picker renders a date-free skeleton;
+// from then on the client's own values drive it. False on the server and during
+// hydration, true on every render after.
+
+const subscribeToNothing = () => () => {}
+
+function useHydrated(): boolean {
+  return useSyncExternalStore(subscribeToNothing, () => true, () => false)
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function BookingFlow() {
-  const [today] = useState(() => {
-    const d = new Date()
-    d.setHours(0, 0, 0, 0)
-    return d
-  })
+  const hydrated = useHydrated()
+
+  // Both read once. On the client they are read during the hydration render —
+  // which is safe, because nothing derived from them is drawn until `hydrated`.
+  const [today] = useState(() => startOfDay(new Date()))
+  const [linked] = useState<UrlState>(() =>
+    typeof window === 'undefined' ? NO_LINK : readUrlState(window.location.search, startOfDay(new Date()))
+  )
+
+  // What the visitor has chosen. `null` means "not yet" — the view falls back to
+  // the link, then to the default. Picker state below is derived from these
+  // during render rather than settled in effects once data lands.
+  const [rangeChoice, setRangeChoice] = useState<Date | null>(null)
+  const [durationChoice, setDurationChoice] = useState<Duration | null>(null)
+  const [dayChoice, setDayChoice] = useState<string | null>(null)
+  // `undefined` until the visitor touches anything, so a time named by the link
+  // still applies; `null` once it has been cleared.
+  const [slotChoice, setSlotChoice] = useState<SelectedSlot | null | undefined>(undefined)
+
+  // Availability per `${duration}:${dateKey}`. A key that is absent is loading;
+  // a week already seen comes back instantly.
+  const [cache, setCache] = useState<Map<string, DaySlots>>(() => new Map())
+  const inFlight = useRef(new Set<string>())
 
   const [step, setStep] = useState<Step>('pick')
-  // The strip starts at today — nobody books backwards.
-  const [rangeStart, setRangeStart] = useState<Date>(() => startOfDay(new Date()))
-  const [duration, setDuration] = useState<Duration>(DEFAULT_DURATION)
-  const [rangeData, setRangeData] = useState<RangeData>(new Map())
-  const [loadingDays, setLoadingDays] = useState<Set<string>>(
-    () => new Set(rangeKeys(startOfDay(new Date())))
-  )
-  const [selectedDay, setSelectedDay] = useState<string | null>(null)
-  const [selectedSlot, setSelectedSlot] = useState<SelectedSlot | null>(null)
   const [form, setForm] = useState<FormData>({ name: '', email: '', topic: '' })
   // Empty until someone asks for a guest field — the row only exists on request.
   const [guests, setGuests] = useState<string[]>([])
@@ -172,105 +199,122 @@ export function BookingFlow() {
   const [skeletonCount, setSkeletonCount] = useState(12)
   const [booking, setBooking] = useState(false)
   const [bookError, setBookError] = useState<string | null>(null)
+  const [slotTaken, setSlotTaken] = useState(false)
+  const [booked, setBooked] = useState<Booked | null>(null)
+  const [findOpen, setFindOpen] = useState(false)
 
-  const fetchVersion = useRef(0)
-  // The link is read once on mount and written from then on; until that first
-  // read lands, writing would overwrite the very link that was opened.
-  const urlRead = useRef(false)
-  // A time named by the link, held until that day's slots come back.
-  const [pendingTime, setPendingTime] = useState<string | null>(null)
+  // ─── Derived picker state ────────────────────────────────────────────────────
 
-  // Applied in an effect rather than in the initial state, so the server-rendered
-  // markup and the first client render stay identical.
+  const duration = durationChoice ?? linked.duration ?? DEFAULT_DURATION
+  // The strip starts at today — nobody books backwards — or on the day a
+  // shared link names, so it is the first tile people see.
+  const rangeStart = rangeChoice ?? (linked.dateKey ? fromDateKey(linked.dateKey) : today)
+  const rangeStartKey = toDateKey(rangeStart)
+  const keys = rangeKeys(rangeStart)
+
+  const rangeData: RangeData = new Map()
+  const loadingDays = new Set<string>()
+  for (const k of keys) {
+    const slots = cache.get(`${duration}:${k}`)
+    if (slots) rangeData.set(k, slots)
+    else loadingDays.add(k)
+  }
+  const rangeLoading = loadingDays.size > 0
+
+  // Land on a day that actually has openings, so the time list is never empty
+  // on arrival: the day picked (or linked) if it has any, else the first that does.
+  const preferredDay = dayChoice ?? linked.dateKey
+  const preferredInRange = preferredDay !== null && keys.includes(preferredDay)
+  const selectedDay = rangeLoading
+    ? (preferredInRange ? preferredDay : null)
+    : preferredInRange && countAvailable(rangeData.get(preferredDay)) > 0
+      ? preferredDay
+      : keys.find(k => countAvailable(rangeData.get(k)) > 0) ?? null
+
+  // A shared link can name a time too; it is selected once that day's slots
+  // are in. If the slot was taken in the meantime the day still opens, just with
+  // nothing selected.
+  const linkedSlot = ((): SelectedSlot | null => {
+    if (!linked.dateKey || !linked.time) return null
+    const slot = rangeData.get(linked.dateKey)?.find(s => s.reason === 'available' && s.display === linked.time)
+    return slot ? { iso: slot.iso, dateKey: linked.dateKey } : null
+  })()
+  const slotCandidate = slotChoice === undefined ? linkedSlot : slotChoice
+  const selectedSlot =
+    slotCandidate &&
+    !rangeLoading &&
+    slotCandidate.dateKey === selectedDay &&
+    rangeData.get(selectedDay)?.some(s => s.iso === slotCandidate.iso && s.reason === 'available')
+      ? slotCandidate
+      : null
+
+  const openCount = !rangeLoading && selectedDay ? countAvailable(rangeData.get(selectedDay)) : 0
+  if (openCount > 0 && openCount !== skeletonCount) setSkeletonCount(openCount)
+
+  // ─── Effects: only the outside world ─────────────────────────────────────────
+
+  // Fetch whatever the visible week is missing. Results land in the cache; the
+  // view above re-derives from it.
   useEffect(() => {
-    const url = readUrlState(window.location.search, today)
-    if (url.duration) setDuration(url.duration)
-    if (url.dateKey) {
-      // The strip starts on the shared day, so it is the first tile people see.
-      setRangeStart(new Date(`${url.dateKey}T00:00:00`))
-      setSelectedDay(url.dateKey)
+    if (!hydrated) return
+    for (const k of rangeKeys(fromDateKey(rangeStartKey))) {
+      const key = `${duration}:${k}`
+      if (cache.has(key) || inFlight.current.has(key)) continue
+      inFlight.current.add(key)
+      fetch(`/api/availability?date=${k}&duration=${duration}`)
+        .then(res => res.json())
+        .then(data =>
+          ((data.slots ?? []) as { start: string; display: string; reason: SlotReason }[])
+            .map((s): SlotInfo => ({ iso: s.start, display: s.display, reason: s.reason }))
+        )
+        .catch((): DaySlots => [])
+        .then(daySlots => {
+          inFlight.current.delete(key)
+          setCache(prev => new Map(prev).set(key, daySlots))
+        })
     }
-    setPendingTime(url.time)
-    urlRead.current = true
-  }, [today])
-
-  const loadRange = useCallback(async (from: Date, dur: Duration) => {
-    const version = ++fetchVersion.current
-    const keys = rangeKeys(from)
-
-    setLoadingDays(new Set(keys))
-    setRangeData(new Map())
-    setSelectedSlot(null)
-
-    await Promise.allSettled(
-      keys.map(async (k) => {
-        try {
-          const res = await fetch(`/api/availability?date=${k}&duration=${dur}`)
-          const data = await res.json()
-          if (version !== fetchVersion.current) return
-          setRangeData(prev => {
-            const next = new Map(prev)
-            const daySlots: DaySlots = ((data.slots ?? []) as { start: string; display: string; reason: SlotReason }[])
-              .map(s => ({ iso: s.start, display: s.display, reason: s.reason }))
-            next.set(k, daySlots)
-            return next
-          })
-        } catch {
-          if (version !== fetchVersion.current) return
-          setRangeData(prev => { const next = new Map(prev); next.set(k, []); return next })
-        } finally {
-          if (version === fetchVersion.current) {
-            setLoadingDays(prev => { const next = new Set(prev); next.delete(k); return next })
-          }
-        }
-      })
-    )
-  }, [])
-
-  useEffect(() => { loadRange(rangeStart, duration) }, [rangeStart, duration, loadRange])
-
-  // Once the range has loaded, land on a day that actually has openings so the
-  // time list is never empty on arrival.
-  useEffect(() => {
-    if (loadingDays.size > 0) return
-    const keys = rangeKeys(rangeStart)
-    setSelectedDay(prev => {
-      if (prev && keys.includes(prev) && countAvailable(rangeData.get(prev)) > 0) return prev
-      return keys.find(k => countAvailable(rangeData.get(k)) > 0) ?? null
-    })
-  }, [loadingDays, rangeData, rangeStart])
-
-  useEffect(() => {
-    if (loadingDays.size > 0 || !selectedDay) return
-    const n = countAvailable(rangeData.get(selectedDay))
-    if (n > 0) setSkeletonCount(n)
-  }, [loadingDays, rangeData, selectedDay])
-
-  // A shared link can name a time too; select it as soon as that day's slots
-  // arrive. If the slot was taken in the meantime the day still opens, just
-  // with nothing selected.
-  useEffect(() => {
-    // `loadingDays` still holds the previous range's keys until the fetch for
-    // the shared day even starts, so waiting on that key alone would give up
-    // before the day had loaded. The day's own entry appearing is the signal.
-    if (!pendingTime || !selectedDay) return
-    if (loadingDays.size > 0 || !rangeData.has(selectedDay)) return
-    const slot = (rangeData.get(selectedDay) ?? [])
-      .find(s => s.reason === 'available' && s.display === pendingTime)
-    if (slot) setSelectedSlot({ iso: slot.iso, dateKey: selectedDay })
-    setPendingTime(null)
-  }, [pendingTime, selectedDay, loadingDays, rangeData])
+  }, [hydrated, rangeStartKey, duration, cache])
 
   // Keep the address bar in step with the picker so whatever is on screen is
-  // what gets copied. replaceState leaves the back button pointing at wherever
-  // the visitor came from instead of at every tile they tried.
+  // always the thing that gets copied. Nothing is written while the week is
+  // loading — that is the moment a linked time has not been applied yet.
+  // replaceState keeps the back button pointing at wherever the visitor came
+  // from instead of at every tile they tried.
+  const selectedIso = selectedSlot?.iso ?? null
   useEffect(() => {
-    if (!urlRead.current || !selectedDay || pendingTime) return
+    if (!hydrated || rangeLoading || !selectedDay) return
     window.history.replaceState(
       null, '',
-      buildUrl(selectedDay, duration, selectedSlot ? fmtSlot(selectedSlot.iso) : null),
+      buildUrl(selectedDay, duration, selectedIso ? fmtSlot(selectedIso) : null),
     )
-  }, [selectedDay, duration, selectedSlot, pendingTime])
+  }, [hydrated, rangeLoading, selectedDay, duration, selectedIso])
+
+  // ─── Actions ─────────────────────────────────────────────────────────────────
+
+  const goToRange = (from: Date) => {
+    setRangeChoice(from)
+    setSlotChoice(null)
+  }
+
+  const pickDay = (key: string) => {
+    setDayChoice(key)
+    setSlotChoice(null)
+    setSlotTaken(false)
+  }
+
+  const pickDuration = (d: Duration) => {
+    setDurationChoice(d)
+    setSlotChoice(null)
+  }
+
+  /** Drops what is known about a day, so the next render fetches it afresh. */
+  const forgetDay = (dateKey: string) => {
+    setCache(prev => {
+      const next = new Map(prev)
+      for (const d of DURATIONS) next.delete(`${d}:${dateKey}`)
+      return next
+    })
+  }
 
   // Blank rows are ignored; duplicates and the booker's own address are dropped
   // so nobody receives the invite twice.
@@ -293,10 +337,27 @@ export function BookingFlow() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startTime: selectedSlot.iso, duration, ...form, guests: cleanGuests }),
       })
+      const data = await res.json().catch(() => ({}))
+
+      if (res.status === 409) {
+        // Someone else got there first. Back to the times, refreshed, with the
+        // form kept as typed so picking again costs one tap.
+        forgetDay(selectedSlot.dateKey)
+        setSlotChoice(null)
+        setSlotTaken(true)
+        setStep('pick')
+        return
+      }
+      if (res.status === 400 && typeof data.error === 'string') {
+        setBookError(`${data.error}. Please check and try again.`)
+        return
+      }
       if (!res.ok) throw new Error()
+
+      setBooked({ iso: selectedSlot.iso, duration, meetLink: data.meetLink ?? null })
       setStep('confirmed')
     } catch {
-      setBookError('Booking failed. The slot may already be taken — please try another time.')
+      setBookError(`Something went wrong on our side, and nothing was booked. Please try again in a moment.`)
     } finally {
       setBooking(false)
     }
@@ -304,10 +365,10 @@ export function BookingFlow() {
 
   // ─── Confirmed ───────────────────────────────────────────────────────────────
 
-  if (step === 'confirmed' && selectedSlot) {
+  if (step === 'confirmed' && booked) {
     return (
       <PageShell>
-        <div className="flex flex-col items-center justify-center min-h-[70vh] px-6">
+        <div className="flex flex-col items-center justify-center min-h-[70vh] px-6 py-12">
           <div className="max-w-md w-full text-center space-y-8">
             <div className="w-20 h-20 rounded-full bg-emerald-500/10 flex items-center justify-center mx-auto border border-emerald-500/20">
               <svg className="w-10 h-10 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -323,9 +384,9 @@ export function BookingFlow() {
             </div>
             <div className="text-left rounded-2xl bg-[var(--color-surface)] border border-[var(--color-border)] p-6 space-y-3">
               <DetailRow label="With" value={HOST_NAME} />
-              <DetailRow label="Date" value={fmtLong(selectedSlot.iso)} />
-              <DetailRow label="Time" value={`${fmtSlot(selectedSlot.iso)} (${TIME_ZONE_LABEL})`} />
-              <DetailRow label="Duration" value={`${duration} minutes`} />
+              <DetailRow label="Date" value={fmtLong(booked.iso)} />
+              <DetailRow label="Time" value={`${fmtSlot(booked.iso)} – ${fmtSlotEnd(booked.iso, booked.duration)} (${TIME_ZONE_LABEL})`} />
+              <DetailRow label="Duration" value={`${booked.duration} minutes`} />
               {form.topic && <DetailRow label="Topic" value={form.topic} />}
               {cleanGuests.length > 0 && (
                 <DetailRow
@@ -334,6 +395,22 @@ export function BookingFlow() {
                 />
               )}
             </div>
+            {booked.meetLink && (
+              <div className="space-y-2">
+                <a
+                  href={booked.meetLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-2 w-full py-3.5 rounded-full bg-[var(--color-accent)] text-white font-semibold text-sm hover:opacity-90 transition-opacity"
+                >
+                  <VideoIcon className="w-4 h-4" />
+                  Google Meet link
+                </a>
+                <p className="text-xs text-[var(--color-muted)] break-all">
+                  {booked.meetLink.replace(/^https?:\/\//, '')} · also in the invite
+                </p>
+              </div>
+            )}
             <button
               onClick={() => window.location.reload()}
               className="inline-block text-sm text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] transition-colors"
@@ -465,7 +542,7 @@ export function BookingFlow() {
           </button>
 
           <p className="text-xs text-center text-[var(--color-muted)]">
-            A Google Calendar invite will be sent to {HOST_NAME}, you{cleanGuests.length > 0 &&
+            A Google Calendar invite{ADD_GOOGLE_MEET && ' with a Google Meet link'} will be sent to {HOST_NAME}, you{cleanGuests.length > 0 &&
               ` and ${cleanGuests.length} guest${cleanGuests.length === 1 ? '' : 's'}`}.
           </p>
         </div>
@@ -475,26 +552,34 @@ export function BookingFlow() {
 
   // ─── Pick: day strip → time list ──────────────────────────────────────────────
 
-  const rangeDays = Array.from({ length: RANGE_DAYS }, (_, i) => addDays(rangeStart, i))
-  const rangeLoading = loadingDays.size > 0
-  const atToday = toDateKey(rangeStart) === toDateKey(today)
+  if (!hydrated) {
+    return (
+      <PageShell>
+        <PickSkeleton />
+      </PageShell>
+    )
+  }
+
+  const rangeDays = keys.map(fromDateKey)
+  const atToday = rangeStartKey === toDateKey(today)
   const nextDisabled = rangeStart >= addDays(today, MAX_DAYS_AHEAD - RANGE_DAYS)
+
+  // "Today" is the way back to now, so it wakes up as soon as the view leaves
+  // today — moving to another day counts, not just another week. When today has
+  // no openings it can't be landed on at all, so the button stays asleep.
+  const todayKey = toDateKey(today)
+  const todayOpen = countAvailable(rangeData.get(todayKey)) > 0
+  const atTodayView = atToday && (!todayOpen || selectedDay === todayKey)
 
   const daySlots = selectedDay ? rangeData.get(selectedDay) ?? [] : []
   const openSlots = daySlots.filter(s => s.reason === 'available')
-  const rangeTotal = rangeDays.reduce((sum, d) => sum + countAvailable(rangeData.get(toDateKey(d))), 0)
+  const rangeTotal = keys.reduce((sum, k) => sum + countAvailable(rangeData.get(k)), 0)
 
   return (
     <PageShell>
-      <div className={`max-w-3xl mx-auto px-4 sm:px-6 py-8 ${selectedSlot ? 'pb-32' : ''}`}>
+      <div className={`max-w-3xl mx-auto px-4 sm:px-6 py-8 ${selectedSlot ? 'pb-44' : ''}`}>
 
-        {/* Page header */}
-        <div className="mb-6">
-          <h1 className="text-2xl sm:text-3xl font-bold mb-1">Book a Meeting</h1>
-          <p className="text-sm text-[var(--color-muted-light)]">
-            Schedule a call with {HOST_NAME} · {workingHoursLabel()}
-          </p>
-        </div>
+        <PageHeader onFindSlots={() => setFindOpen(true)} />
 
         {/* Step 1 — pick a day */}
         <div className="flex flex-wrap items-center gap-3 mb-2">
@@ -504,10 +589,13 @@ export function BookingFlow() {
 
           <div className="flex items-center gap-2 ml-auto">
             <button
-              onClick={() => setRangeStart(startOfDay(new Date()))}
-              disabled={atToday}
+              onClick={() => {
+                if (!atToday) setRangeChoice(today)
+                pickDay(todayKey)
+              }}
+              disabled={atTodayView}
               className={`px-3 py-1 rounded-full border text-xs font-semibold transition-all ${
-                atToday
+                atTodayView
                   ? 'border-[var(--color-border)] text-[var(--color-muted)] opacity-40 cursor-not-allowed'
                   : 'border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 cursor-pointer'
               }`}
@@ -515,10 +603,10 @@ export function BookingFlow() {
               Today
             </button>
             <button
-              onClick={() => setRangeStart(d => {
-                const back = addDays(d, -RANGE_DAYS)
-                return back < today ? startOfDay(today) : back
-              })}
+              onClick={() => {
+                const back = addDays(rangeStart, -RANGE_DAYS)
+                goToRange(back < today ? today : back)
+              }}
               disabled={atToday}
               aria-label="Earlier days"
               className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-25 disabled:cursor-not-allowed transition-all"
@@ -531,7 +619,7 @@ export function BookingFlow() {
               {fmtRangeHeader(rangeStart)}
             </span>
             <button
-              onClick={() => setRangeStart(d => addDays(d, RANGE_DAYS))}
+              onClick={() => goToRange(addDays(rangeStart, RANGE_DAYS))}
               disabled={nextDisabled}
               aria-label="Later days"
               className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-25 disabled:cursor-not-allowed transition-all"
@@ -546,7 +634,7 @@ export function BookingFlow() {
         <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
           {rangeDays.map((day) => {
             const key = toDateKey(day)
-            const isToday = key === toDateKey(today)
+            const isToday = key === todayKey
             const loading = loadingDays.has(key)
             const count = countAvailable(rangeData.get(key))
             const isSelected = key === selectedDay
@@ -555,7 +643,7 @@ export function BookingFlow() {
             return (
               <button
                 key={key}
-                onClick={() => { setSelectedDay(key); setSelectedSlot(null) }}
+                onClick={() => pickDay(key)}
                 disabled={disabled}
                 className={`rounded-xl border py-2.5 px-1 text-center transition-all ${
                   isSelected
@@ -608,16 +696,23 @@ export function BookingFlow() {
             2 · Pick a time
           </p>
 
+          {slotTaken && (
+            <p className="mb-3 text-sm text-[var(--color-foreground)] bg-amber-400/15 border border-amber-400/40 rounded-xl px-4 py-3">
+              That time was just booked by someone else. The times below are up to date — please pick another.
+            </p>
+          )}
+
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
 
-            {/* Meeting length lives with the times it produces */}
-            <div className="flex flex-wrap items-center gap-2 pb-4 mb-4 border-b border-[var(--color-border)]">
-              <span className="text-xs text-[var(--color-muted)] mr-1">Meeting length</span>
+            {/* Meeting length lives with the times it produces — the three
+                durations say what they are, so no label crowds them onto a
+                second line on a phone. */}
+            <div className="flex items-center gap-2 pb-4 mb-4 border-b border-[var(--color-border)]">
               {DURATIONS.map(d => (
                 <button
                   key={d}
-                  onClick={() => setDuration(d)}
-                  className={`px-4 py-1.5 rounded-full border text-sm font-medium transition-all ${
+                  onClick={() => pickDuration(d)}
+                  className={`shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full border text-sm font-medium transition-all ${
                     duration === d
                       ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]'
                       : 'border-[var(--color-border)] text-[var(--color-muted-light)] hover:border-[var(--color-border-light)]'
@@ -634,16 +729,7 @@ export function BookingFlow() {
                   <p className="text-sm font-semibold"><Bar className="h-3.5 w-44" /></p>
                   <p className="text-xs text-[var(--color-muted)]"><Bar className="h-3 w-24" /></p>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                  {Array.from({ length: skeletonCount }, (_, i) => (
-                    <div key={i} className="px-3 py-2 rounded-xl border border-[var(--color-border)] text-center">
-                      <span className="inline-flex flex-col items-end">
-                        <span className="text-base leading-snug"><Bar className="h-3.5 w-11" /></span>
-                        <span className="text-[10px] leading-snug"><Bar className="h-2 w-11" /></span>
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <SlotGridSkeleton count={skeletonCount} />
               </>
             ) : !selectedDay ? (
               <div className="py-8 text-center space-y-2">
@@ -652,7 +738,7 @@ export function BookingFlow() {
                 </p>
                 {!nextDisabled && (
                   <button
-                    onClick={() => setRangeStart(d => addDays(d, RANGE_DAYS))}
+                    onClick={() => goToRange(addDays(rangeStart, RANGE_DAYS))}
                     className="text-sm font-semibold text-[var(--color-accent)] hover:underline"
                   >
                     Check the next 7 days →
@@ -679,7 +765,10 @@ export function BookingFlow() {
                     return (
                       <button
                         key={slot.iso}
-                        onClick={() => setSelectedSlot(isSelected ? null : { iso: slot.iso, dateKey: selectedDay })}
+                        onClick={() => {
+                          setSlotChoice(isSelected ? null : { iso: slot.iso, dateKey: selectedDay })
+                          setSlotTaken(false)
+                        }}
                         className={`px-3 py-2 rounded-xl border text-center transition-all ${
                           isSelected
                             ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
@@ -707,7 +796,12 @@ export function BookingFlow() {
           className="fixed bottom-0 inset-x-0 z-50 backdrop-blur-md"
           style={{ background: 'var(--nav-bg)', borderTop: '1px solid var(--nav-border)' }}
         >
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3">
+          {/* Extra bottom padding keeps the two lines clear of the phone's own
+              home indicator instead of ending flush with the device edge. */}
+          <div
+            className="max-w-3xl mx-auto px-4 sm:px-6 pt-4 flex items-center gap-3"
+            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.5rem)' }}
+          >
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-[var(--color-foreground)] truncate">
                 {fmtLong(selectedSlot.iso)}
@@ -717,7 +811,7 @@ export function BookingFlow() {
               </p>
             </div>
             <button
-              onClick={() => setStep('details')}
+              onClick={() => { setBookError(null); setStep('details') }}
               className="shrink-0 px-6 py-2.5 rounded-full bg-[var(--color-accent)] text-white font-semibold text-sm hover:opacity-90 transition-opacity"
             >
               Continue →
@@ -725,12 +819,109 @@ export function BookingFlow() {
           </div>
         </div>
       )}
+
+      {findOpen && (
+        <FindSlots
+          initialDuration={duration}
+          initialFrom={rangeStartKey}
+          initialTo={keys[keys.length - 1]}
+          minDate={todayKey}
+          maxDate={toDateKey(addDays(today, MAX_DAYS_AHEAD - 1))}
+          onClose={() => setFindOpen(false)}
+        />
+      )}
     </PageShell>
   )
 }
 
-// Copies whatever the address bar currently holds — the day, the length, and
-// the time if one is picked — so the link lands the next person on this view.
+// ─── Pieces of the pick step ──────────────────────────────────────────────────
+
+function PageHeader({ onFindSlots }: { onFindSlots?: () => void }) {
+  return (
+    <div className="mb-6 flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <h1 className="text-2xl sm:text-3xl font-bold mb-1">Book a Meeting</h1>
+        <p className="text-sm text-[var(--color-muted-light)]">
+          Schedule a call with {HOST_NAME} · {workingHoursLabel()}
+        </p>
+      </div>
+      {/* Disabled until hydration, but drawn from the start so nothing shifts */}
+      <button
+        type="button"
+        onClick={onFindSlots}
+        disabled={!onFindSlots}
+        className="shrink-0 mt-1 flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-[var(--color-border)] text-sm font-medium text-[var(--color-foreground)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50 disabled:pointer-events-none transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        Find slots
+      </button>
+    </div>
+  )
+}
+
+/** What the server renders: the page's shape with no dates in it. */
+function PickSkeleton() {
+  return (
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8" aria-busy="true">
+      <PageHeader />
+      <div className="flex flex-wrap items-center gap-3 mb-2">
+        <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium">
+          1 · Pick a day
+        </p>
+        <div className="flex items-center gap-2 ml-auto h-8">
+          <Bar className="h-4 w-40" />
+        </div>
+      </div>
+      <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+        {Array.from({ length: RANGE_DAYS }, (_, i) => (
+          <div key={i} className="rounded-xl border border-[var(--color-border)] py-2.5 px-1 flex flex-col items-center gap-1.5">
+            <Bar className="h-2.5 w-6" />
+            <Bar className="h-5 w-5" />
+            <Bar className="h-2.5 w-8" />
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 px-1 text-xs"><Bar className="h-3 w-44" /></p>
+      <div className="mt-6">
+        <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium mb-2">
+          2 · Pick a time
+        </p>
+        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
+          <div className="flex items-center gap-2 pb-4 mb-4 border-b border-[var(--color-border)]">
+            {DURATIONS.map(d => (
+              <span key={d} className="shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full border border-[var(--color-border)] text-sm font-medium text-[var(--color-muted-light)]">
+                {d} min
+              </span>
+            ))}
+          </div>
+          <div className="mb-3"><Bar className="h-3.5 w-44" /></div>
+          <SlotGridSkeleton count={12} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SlotGridSkeleton({ count }: { count: number }) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="px-3 py-2 rounded-xl border border-[var(--color-border)] text-center">
+          <span className="inline-flex flex-col items-end">
+            <span className="text-base leading-snug"><Bar className="h-3.5 w-11" /></span>
+            <span className="text-[10px] leading-snug"><Bar className="h-2 w-11" /></span>
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Copies whatever the address bar currently holds — the day, the length and the
+// time, if one is picked — so the link lands the next person on this exact view.
+// time, if one is picked — so the link lands the next person on this exact view.
 function CopyLinkButton() {
   const [copied, setCopied] = useState(false)
 
@@ -836,5 +1027,13 @@ function FormField({
       </label>
       {children}
     </div>
+  )
+}
+
+function VideoIcon({ className }: { className: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
+    </svg>
   )
 }

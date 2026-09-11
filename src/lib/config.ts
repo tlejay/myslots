@@ -32,6 +32,9 @@ export const SLOT_STEP_MINUTES = 30
 export const RANGE_DAYS = 7      // days visible in the strip at once
 export const MAX_DAYS_AHEAD = 60 // how far ahead people may book
 
+/** Give every booking a Google Meet room on the invite. */
+export const ADD_GOOGLE_MEET = true
+
 export function isWeekend(dow: number): boolean {
   return dow === 0 || dow === 6
 }

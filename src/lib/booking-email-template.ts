@@ -15,6 +15,8 @@ export interface BookingSummary {
   start: Date
   end: Date
   duration: number
+  /** The Google Meet room on the invite, when Google created one. */
+  meetLink?: string | null
 }
 
 /** The parts of `config.ts` the wording depends on. */
@@ -73,6 +75,9 @@ function detailRows(b: BookingSummary, ctx: EmailContext): string {
     row('Email', `<a href="mailto:${esc(b.email)}" style="color:#2563eb;text-decoration:none">${esc(b.email)}</a>`),
     row('When', esc(when)),
     row('Length', `${b.duration} minutes`),
+    b.meetLink
+      ? row('Google Meet', `<a href="${esc(b.meetLink)}" style="color:#2563eb;text-decoration:none">${esc(b.meetLink.replace(/^https?:\/\//, ''))}</a>`)
+      : '',
     b.topic.trim() ? row('Topic', esc(b.topic.trim())) : '',
     b.guests.length > 0
       ? row(`Guests (${b.guests.length})`, b.guests.map(esc).join('<br>'))

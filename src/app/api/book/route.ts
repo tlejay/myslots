@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
-import { calendar, CALENDAR_ID, isCalendarConfigured } from '@/lib/google-calendar'
-import { DURATIONS, HOST_NAME, TIME_ZONE, hoursFor } from '@/lib/config'
+import { busyBetween, calendar, CALENDAR_ID, isCalendarConfigured } from '@/lib/google-calendar'
+import { ADD_GOOGLE_MEET, DURATIONS, HOST_NAME, TIME_ZONE } from '@/lib/config'
+import { slotProblem } from '@/lib/booking-time'
 import { notifyBookingCreated, notifyBookingFailed, type BookingSummary } from '@/lib/booking-email'
 
 interface BookingRequest {
@@ -49,29 +51,7 @@ function validate(body: BookingRequest): string | null {
     if (bad.length > 0) return `Invalid guest email: ${bad[0]}`
   }
 
-  const start = new Date(startTime)
-  if (Number.isNaN(start.getTime())) return 'Invalid start time'
-  if (start <= new Date()) return 'That time is in the past'
-
-  // Re-derive the wall-clock time in the configured zone.
-  const local = new Date(start.toLocaleString('en-US', { timeZone: TIME_ZONE }))
-  const { start: openHour, end: closeHour } = hoursFor(local.getDay())
-  const startMinutes = local.getHours() * 60 + local.getMinutes()
-  if (startMinutes < openHour * 60) return 'That time is before working hours'
-  if (startMinutes + duration > closeHour * 60) return 'That time runs past working hours'
-
-  return null
-}
-
-async function isStillFree(start: Date, end: Date): Promise<boolean> {
-  const fb = await calendar.freebusy.query({
-    requestBody: {
-      timeMin: start.toISOString(),
-      timeMax: end.toISOString(),
-      items: [{ id: CALENDAR_ID }],
-    },
-  })
-  return (fb.data.calendars?.[CALENDAR_ID]?.busy ?? []).length === 0
+  return slotProblem(new Date(startTime), duration)
 }
 
 export async function POST(request: NextRequest) {
@@ -90,12 +70,6 @@ export async function POST(request: NextRequest) {
   const start = new Date(startTime)
   const end = new Date(start.getTime() + duration * 60_000)
 
-  // Demo mode: pretend it worked, but never send an invite — or a notification
-  // — to a real person.
-  if (!isCalendarConfigured) {
-    return NextResponse.json({ success: true, demo: true })
-  }
-
   const summary: BookingSummary = {
     name: name.trim(),
     email: email.trim(),
@@ -107,13 +81,25 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    if (!(await isStillFree(start, end))) {
+    // The page may have been open for an hour. Whoever booked this time in the
+    // meantime keeps it; this visitor is told, and picks again. Back-to-back
+    // meetings are fine, so a block that merely touches an edge does not count.
+    const clashes = (await busyBetween(start, end)).filter(b => b.start < end && b.end > start)
+    if (clashes.length > 0) {
       return NextResponse.json({ error: 'That slot was just taken' }, { status: 409 })
+    }
+
+    // Demo mode: the clash check above runs against the demo schedule, then it
+    // pretends it worked — but never sends an invite, or a notification, to a
+    // real person.
+    if (!isCalendarConfigured) {
+      return NextResponse.json({ success: true, demo: true, meetLink: null })
     }
 
     const created = await calendar.events.insert({
       calendarId: CALENDAR_ID,
       sendUpdates: 'all',
+      conferenceDataVersion: ADD_GOOGLE_MEET ? 1 : 0,
       requestBody: {
         summary: `${HOST_NAME} × ${name.trim()}`,
         description: [topic?.trim() ? `Topic: ${topic.trim()}` : null, 'Booked via MySlots']
@@ -126,13 +112,26 @@ export async function POST(request: NextRequest) {
           { email: email.trim(), displayName: name.trim() },
           ...guestEmails.map(guest => ({ email: guest })),
         ],
+        ...(ADD_GOOGLE_MEET && {
+          conferenceData: {
+            createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: 'hangoutsMeet' } },
+          },
+        }),
       },
     })
 
-    // Google tells the guests. Nobody tells the host, so we do.
-    await notifyBookingCreated(summary, created.data.htmlLink)
+    // Google attaches the room to the invite itself; the link is only read back
+    // so the confirmation screen and the host's email can show it too. A room
+    // Google declined to create leaves the booking standing, just without one.
+    const meetLink = created.data.hangoutLink ?? null
+    if (ADD_GOOGLE_MEET && !meetLink) {
+      console.error('Google Meet room was not created:', created.data.conferenceData?.createRequest?.status)
+    }
 
-    return NextResponse.json({ success: true })
+    // Google tells the guests. Nobody tells the host, so we do.
+    await notifyBookingCreated({ ...summary, meetLink }, created.data.htmlLink)
+
+    return NextResponse.json({ success: true, meetLink })
   } catch (err) {
     console.error('Booking failed:', err)
     // A booking that vanishes silently is worse than one that fails loudly.

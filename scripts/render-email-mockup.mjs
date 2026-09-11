@@ -43,8 +43,8 @@ const ctx = {
   timeZoneLabel: 'GMT+7',
 }
 
-// One booking with every row the template can draw — a topic, several guests,
-// and a link back to the calendar entry.
+// One booking with every row the template can draw — a Meet room, a topic,
+// several guests, and a link back to the calendar entry.
 const sample = {
   name: 'Priya Raman',
   email: 'priya@northwind.dev',
@@ -53,6 +53,7 @@ const sample = {
   start: new Date('2026-10-09T07:00:00.000Z'), // 14:00 in Asia/Bangkok
   end: new Date('2026-10-09T08:00:00.000Z'),
   duration: 60,
+  meetLink: 'https://meet.google.com/abc-defg-hij',
 }
 
 /**
@@ -112,7 +113,8 @@ const shots = [
   {
     file: 'booking-email-failure.png',
     height: 683,
-    email: renderBookingFailed(sample, ctx, 'invalid_grant: Token has been expired or revoked.'),
+    // A failed booking never reached Google, so there is no Meet room to show.
+    email: renderBookingFailed({ ...sample, meetLink: null }, ctx, 'invalid_grant: Token has been expired or revoked.'),
   },
 ]
 
