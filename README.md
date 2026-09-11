@@ -1,15 +1,67 @@
+<div align="center">
+
+<img src="docs/hero.png" alt="MySlots — a self-hosted booking page on your own Google Calendar" width="100%">
+
 # MySlots
 
-A self-hosted booking page for one person. Visitors pick a day, pick a time, and
-land on your Google Calendar with an invite in their inbox — no third-party
-scheduling service, no per-seat pricing, no account for them to create.
+**A self-hosted Calendly alternative for one person.**<br>
+Visitors pick a day, pick a time, and land on your Google Calendar with a Meet room
+and an invite in every inbox. No SaaS, no seats, no account for them to create.
 
-Next.js App Router + Tailwind + the Google Calendar API. Three small API routes,
-two components, and no dependencies beyond `googleapis`.
+[![License: MIT](https://img.shields.io/badge/license-MIT-4f46e5)](LICENSE)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs)](https://nextjs.org)
+[![React 19](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Tailwind CSS v4](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
+[![Dependencies](https://img.shields.io/badge/runtime%20deps-googleapis%20only-10b981)](package.json)
 
-![The booking page](docs/screenshot.png)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Ftlejay%2Fmyslots&project-name=myslots&repository-name=myslots)
 
-<sub>Also: [dark theme](docs/screenshot-dark.png) · [details form](docs/screenshot-form.png) · [confirmation screen](docs/screenshot-confirmed.png) · [Find slots](docs/screenshot-find-slots.png)</sub>
+[Features](#-what-you-get) · [Quick start](#quick-start) · [Connect Google Calendar](#connect-your-google-calendar) · [How it works](#how-it-works) · [Deploy](#deploy)
+
+</div>
+
+---
+
+## ✨ What you get
+
+| Feature | What it does |
+|---|---|
+| 📅 **Real availability** | Reads your Google Calendar's free/busy. Titles and attendees never leave your calendar |
+| 🎥 **A Meet room on every booking** | Created with the event, shown on the confirmation screen and in every invite |
+| 🛡️ **No double booking** | The calendar is re-checked the instant someone confirms. A slot taken meanwhile gets a clear "pick again", never a clash |
+| 📋 **Copy your week as text** | **Find slots** turns a date range into a paste-ready message for LINE, Slack or email |
+| 📬 **The email Google won't send you** | Google never tells the calendar owner about their own events, so MySlots mails you through Gmail |
+| 🔗 **Every view is a link** | `?date=…&duration=…&time=…` — send someone straight to a slot |
+| 📱 **Phone-first** | Sticky confirm bar, 16px inputs (no iOS zoom), skeletons that hold the layout still |
+| 🌗 **Light and dark** | Dark by default, one tap to light, and the choice is remembered |
+| 🧪 **Demo mode** | `pnpm dev` with no credentials runs the whole flow against a synthetic calendar |
+
+## 🎬 See it in action
+
+<p align="center">
+  <img src="docs/demo.gif" alt="Picking a day and time, then copying a week of availability with Find slots" width="880">
+</p>
+
+## 📱 Built for the phone
+
+<p align="center">
+  <img src="docs/mobile.png" alt="Three phone screens: the day and time picker, Find slots in dark mode, and the confirmation with a Google Meet link" width="100%">
+</p>
+
+<sub>More: [desktop](docs/screenshot.png) · [dark theme](docs/screenshot-dark.png) · [details form](docs/screenshot-form.png) · [confirmation](docs/screenshot-confirmed.png) · [Find slots](docs/screenshot-find-slots.png)</sub>
+
+## 🤔 MySlots or a hosted scheduler?
+
+| | MySlots | A hosted scheduler |
+|---|---|---|
+| **Price** | Free, MIT — you pay only for hosting (Vercel's free tier is plenty) | Free tier, then per seat |
+| **Where your data lives** | Your Google account and your own deployment | Their servers |
+| **Changing how it works** | Edit `config.ts`, or fork and change anything | Whatever their settings page offers |
+| **Setup** | About 10 minutes in Google Cloud, once | Sign up |
+
+If you want teams, round-robin or paid bookings, a hosted tool is the better fit.
+If you are one person who wants a page that is *yours*, this is it.
 
 ---
 
@@ -320,7 +372,13 @@ Google leaves out.
 ## Deploy
 
 The app is a stock Next.js project — Vercel, Netlify, Fly, a container, anything.
-On Vercel:
+The quickest path is the button:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Ftlejay%2Fmyslots&project-name=myslots&repository-name=myslots)
+
+It clones the repo into your GitHub account and deploys it straight into **demo
+mode** — a working page with a synthetic calendar, before you have set up anything.
+Or from a clone:
 
 ```bash
 vercel
@@ -390,6 +448,19 @@ scripts/
   render-email-mockup.mjs         pnpm mockup — the README's email pictures
 ```
 
+## Contributing
+
+Issues and pull requests are welcome. Run `pnpm lint` and `pnpm build` before you
+open one, and keep the app runnable in demo mode — that is how reviewers try it.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+
+If MySlots saves you a scheduling subscription, a ⭐ helps the next person find it.
+
+</div>

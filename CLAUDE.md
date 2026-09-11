@@ -17,6 +17,13 @@ A single-person booking page: Next.js App Router, Tailwind v4, Google Calendar A
 - `src/lib/booking-email.ts` — Gmail transport. Sends are best-effort; a booking
   never fails because the mail did.
 - `src/app/book/BookingFlow.tsx` — the whole three-step client flow.
+- `src/app/book/FindSlots.tsx` — the Find slots panel: free time as copyable text.
+- `src/lib/booking-time.ts` — working hours, slot grid, horizon, free windows and
+  the server-side slot check. Every endpoint reads its rules from here.
+- `src/lib/availability-text.ts` — the Find slots message format.
+- `src/app/api/availability/windows/route.ts` — free stretches per day for a range.
+- `docs/hero.png`, `docs/demo.gif`, `docs/mobile.png` — README art, shot from demo
+  mode. Re-shoot when the UI changes visibly.
 
 ## Rules
 
@@ -36,8 +43,9 @@ A single-person booking page: Next.js App Router, Tailwind v4, Google Calendar A
 
 - The query string mirrors the picker (`?date=&duration=&time=`) and is written
   with `replaceState` — never `pushState`, which would trap Back behind every
-  tile a visitor tried. It is read once on mount, in an effect, so the server
-  render and the first client render stay identical.
+  tile a visitor tried. It is read once, in a `useState` initialiser during
+  hydration; nothing date- or link-derived renders until `useHydrated()` is true,
+  so the server render and the first client render stay identical.
 
 - The day strip starts at **today**, never earlier, and always offers a way back.
 - Loading states hold their height — skeletons, not collapsing placeholders — so
