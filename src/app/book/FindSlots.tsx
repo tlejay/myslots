@@ -35,7 +35,7 @@ export function FindSlots({
   const [customMinutes, setCustomMinutes] = useState('45')
   const [from, setFrom] = useState(initialFrom)
   const [to, setTo] = useState(initialTo)
-  const [includeWeekends, setIncludeWeekends] = useState(false)
+  const [includeWeekends, setIncludeWeekends] = useState(true)
   const [result, setResult] = useState<Result | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -140,7 +140,7 @@ export function FindSlots({
         aria-modal="true"
         aria-labelledby="find-slots-title"
         tabIndex={-1}
-        className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col rounded-t-2xl sm:rounded-2xl bg-[var(--color-background)] border border-[var(--color-border)] shadow-2xl focus:outline-none"
+        className="relative w-full min-w-0 sm:max-w-lg max-h-[92dvh] flex flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl bg-[var(--color-background)] border border-[var(--color-border)] shadow-2xl focus:outline-none"
       >
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-5 pt-5 pb-3">
@@ -162,7 +162,7 @@ export function FindSlots({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 pb-4 space-y-5">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden px-5 pb-4 space-y-5">
           {/* Meeting length */}
           <fieldset>
             <legend className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium mb-2">
@@ -326,7 +326,9 @@ function DateField({
   onChange: (value: string) => void
 }) {
   return (
-    <label className="block space-y-1">
+    // min-w-0 all the way down: iOS Safari gives a date input an intrinsic
+    // width wider than half a phone, which otherwise spills into the next field.
+    <label className="block min-w-0 space-y-1">
       <span className="text-xs text-[var(--color-muted-light)]">{label}</span>
       <input
         type="date"
@@ -334,7 +336,7 @@ function DateField({
         min={min}
         max={max}
         onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-sm text-[var(--color-foreground)] tabular-nums focus:outline-none focus:border-[var(--color-accent)] transition-colors"
+        className="block w-full min-w-0 appearance-none px-3 py-2 min-h-10 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-sm text-left [&::-webkit-date-and-time-value]:text-left text-[var(--color-foreground)] tabular-nums focus:outline-none focus:border-[var(--color-accent)] transition-colors"
       />
     </label>
   )
