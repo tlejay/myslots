@@ -1,6 +1,6 @@
 import { google } from 'googleapis'
 import { demoBusyBetween } from './demo-availability'
-import { localParts } from './booking-time'
+import { bufferedLookupRange, localParts, withBuffers } from './booking-time'
 import { UTC_OFFSET } from './config'
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID
@@ -22,12 +22,20 @@ oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN })
 export const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
 
 /**
- * Every busy block on the host's calendar that touches [from, to). Without
- * credentials it answers from the demo schedule, so the whole app still runs.
+ * Every busy block on the host's calendar that touches [from, to), already grown
+ * by the meeting buffers — so every caller agrees on what counts as taken.
+ * Without credentials it answers from the demo schedule, so the whole app still
+ * runs.
  */
 export async function busyBetween(from: Date, to: Date): Promise<{ start: Date; end: Date }[]> {
-  if (!isCalendarConfigured) return demoBusyBetween(from, to, d => localParts(d).dateKey, UTC_OFFSET)
+  const range = bufferedLookupRange(from, to)
+  const raw = isCalendarConfigured
+    ? await freeBusy(range.start, range.end)
+    : demoBusyBetween(range.start, range.end, d => localParts(d).dateKey, UTC_OFFSET)
+  return withBuffers(raw).filter(b => b.start < to && b.end > from)
+}
 
+async function freeBusy(from: Date, to: Date): Promise<{ start: Date; end: Date }[]> {
   const fb = await calendar.freebusy.query({
     requestBody: {
       timeMin: from.toISOString(),

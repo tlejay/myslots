@@ -1,4 +1,6 @@
 import {
+  BUFFER_AFTER_MINUTES,
+  BUFFER_BEFORE_MINUTES,
   MAX_DAYS_AHEAD,
   SLOT_STEP_MINUTES,
   TIME_ZONE,
@@ -21,6 +23,30 @@ export interface Interval {
 export interface FreeWindow {
   start: string
   end: string
+}
+
+/**
+ * Busy blocks grown by the meeting buffers. A new meeting needs its before-buffer
+ * clear of whatever ends ahead of it, so each block's end moves later by that
+ * much; likewise its start moves earlier by the after-buffer. Every slot check
+ * can then stay a plain overlap test.
+ */
+export function withBuffers(busy: Interval[]): Interval[] {
+  return busy.map(b => ({
+    start: new Date(b.start.getTime() - BUFFER_AFTER_MINUTES * 60_000),
+    end: new Date(b.end.getTime() + BUFFER_BEFORE_MINUTES * 60_000),
+  }))
+}
+
+/**
+ * The raw lookup range that can hold a block which, once buffered, touches
+ * [from, to).
+ */
+export function bufferedLookupRange(from: Date, to: Date): Interval {
+  return {
+    start: new Date(from.getTime() - BUFFER_BEFORE_MINUTES * 60_000),
+    end: new Date(to.getTime() + BUFFER_AFTER_MINUTES * 60_000),
+  }
 }
 
 export function dayOfWeek(dateKey: string): number {

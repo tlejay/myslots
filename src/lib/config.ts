@@ -32,6 +32,16 @@ export const SLOT_STEP_MINUTES = 30
 export const RANGE_DAYS = 7      // days visible in the strip at once
 export const MAX_DAYS_AHEAD = 60 // how far ahead people may book
 
+/**
+ * Time kept clear around a booked meeting, in minutes — for travel, prep or a
+ * breather. Checked against every busy block on the calendar, not only earlier
+ * bookings: with 30 before, a 09:00–10:00 event makes 10:30 the first start.
+ * Buffers may spill past working hours; they never become calendar events.
+ * Set both to 0 for back-to-back meetings.
+ */
+export const BUFFER_BEFORE_MINUTES = 30
+export const BUFFER_AFTER_MINUTES = 30
+
 /** Give every booking a Google Meet room on the invite. */
 export const ADD_GOOGLE_MEET = true
 

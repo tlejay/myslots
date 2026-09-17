@@ -82,8 +82,9 @@ export async function POST(request: NextRequest) {
 
   try {
     // The page may have been open for an hour. Whoever booked this time in the
-    // meantime keeps it; this visitor is told, and picks again. Back-to-back
-    // meetings are fine, so a block that merely touches an edge does not count.
+    // meantime keeps it; this visitor is told, and picks again. Busy blocks
+    // arrive already grown by the buffers, so a block that merely touches an
+    // edge still leaves the buffer intact and does not count.
     const clashes = (await busyBetween(start, end)).filter(b => b.start < end && b.end > start)
     if (clashes.length > 0) {
       return NextResponse.json({ error: 'That slot was just taken' }, { status: 409 })

@@ -31,7 +31,7 @@ and an invite in every inbox. No SaaS, no seats, no account for them to create.
 |---|---|
 | 📅 **Real availability** | Reads your Google Calendar's free/busy. Titles and attendees never leave your calendar |
 | 🎥 **A Meet room on every booking** | Created with the event, shown on the confirmation screen and in every invite |
-| 🛡️ **No double booking** | The calendar is re-checked the instant someone confirms. A slot taken meanwhile gets a clear "pick again", never a clash |
+| 🛡️ **No double booking, no back-to-back** | The calendar is re-checked the instant someone confirms, and a buffer keeps time clear around every event for travel or prep — after a 09:00–10:00 meeting the first slot is 10:30 |
 | 📋 **Copy your week as text** | **Find slots** turns a date range into a paste-ready message for LINE, Slack or email |
 | 📬 **The email Google won't send you** | Google never tells the calendar owner about their own events, so MySlots mails you through Gmail |
 | 🔗 **Every view is a link** | `?date=…&duration=…&time=…` — send someone straight to a slot |
@@ -206,6 +206,8 @@ export const DURATIONS = [30, 60, 90]    // meeting lengths offered
 export const WEEKDAY_HOURS = { start: 9, end: 20 }
 export const WEEKEND_HOURS = { start: 10, end: 20 }
 export const ADD_GOOGLE_MEET = true     // a Meet room on every invite
+export const BUFFER_BEFORE_MINUTES = 30 // kept clear before a booked meeting
+export const BUFFER_AFTER_MINUTES = 30  // …and after it; 0 allows back-to-back
 ```
 
 ---
@@ -316,6 +318,16 @@ asks the Calendar **free/busy** API what is taken, and labels each slot.
 Free/busy only returns *when* you are busy, never event titles or attendees — so
 this endpoint cannot leak the contents of your calendar even though it is public.
 
+**Buffers.** Before any slot is checked, every busy block is grown by the buffers
+in `config.ts`: its end moves later by `BUFFER_BEFORE_MINUTES`, its start earlier
+by `BUFFER_AFTER_MINUTES`. With both at 30, a 09:00–10:00 event counts as busy
+from 08:30 to 10:30, so the first slot after it is 10:30 — and a meeting may end
+no later than 30 minutes before the next event. The widening happens once, in
+`busyBetween` (`src/lib/google-calendar.ts`), so all three endpoints — and demo
+mode — agree. It applies to every event on the calendar, not only bookings made
+here, the same way Calendly's buffers do. Buffers may spill past working hours,
+and they are never written to the calendar.
+
 The client fetches all seven visible days in parallel and counts the
 `available` slots per day to fill in the day strip. Weeks already seen are kept,
 so paging back is instant.
@@ -358,7 +370,7 @@ writing: the email must be well formed, the duration must be one you offer, the
 time must be in the future, on the slot grid, inside working hours and within
 `MAX_DAYS_AHEAD`, every guest address must
 parse, there may be at most `MAX_GUESTS` (10) of them, and a second free/busy
-check must still show the slot open. A slot taken between page load and submit
+check must still show the slot open, buffers included. A slot taken between page load and submit
 returns **409** rather than double-booking you.
 
 Guests are lowercased and de-duplicated, and the booker's own address and the
@@ -439,9 +451,9 @@ src/
     api/book/route.ts             validate → re-check → insert event
   lib/
     config.ts                     everything you are likely to change
-    booking-time.ts               working hours, slot grid, free windows
+    booking-time.ts               working hours, slot grid, buffers, free windows
     availability-text.ts          the Find slots message
-    google-calendar.ts            OAuth client, demo-mode detection
+    google-calendar.ts            OAuth client, demo-mode detection, buffered free/busy
     demo-availability.ts          synthetic busy blocks, no credentials needed
     booking-email.ts              sends the host notification through Gmail
     booking-email-template.ts     the markup of that email, on its own

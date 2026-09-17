@@ -18,8 +18,12 @@ A single-person booking page: Next.js App Router, Tailwind v4, Google Calendar A
   never fails because the mail did.
 - `src/app/book/BookingFlow.tsx` — the whole three-step client flow.
 - `src/app/book/FindSlots.tsx` — the Find slots panel: free time as copyable text.
-- `src/lib/booking-time.ts` — working hours, slot grid, horizon, free windows and
-  the server-side slot check. Every endpoint reads its rules from here.
+- `src/lib/booking-time.ts` — working hours, slot grid, horizon, buffers, free
+  windows and the server-side slot check. Every endpoint reads its rules from here.
+- Meeting buffers (`BUFFER_BEFORE_MINUTES` / `BUFFER_AFTER_MINUTES`) are applied
+  once, inside `busyBetween`, which returns busy blocks already grown. Never pad
+  again at a call site, and never read free/busy around it — the endpoints would
+  stop agreeing on which slots are open.
 - `src/lib/availability-text.ts` — the Find slots message format.
 - `src/app/api/availability/windows/route.ts` — free stretches per day for a range.
 - `docs/hero.png`, `docs/demo.gif`, `docs/mobile.png` — README art, shot from demo
