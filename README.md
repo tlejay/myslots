@@ -205,6 +205,7 @@ export const BRAND_NAME = 'MySlots'      // nav label
 export const DURATIONS = [30, 60, 90]    // meeting lengths offered
 export const WEEKDAY_HOURS = { start: 9, end: 20 }
 export const WEEKEND_HOURS = { start: 10, end: 20 }
+export const DAILY_BREAK = { start: 12, end: 13 } // lunch; null keeps the day whole
 export const ADD_GOOGLE_MEET = true     // a Meet room on every invite
 export const BUFFER_BEFORE_MINUTES = 30 // kept clear before a booked meeting
 export const BUFFER_AFTER_MINUTES = 30  // …and after it; 0 allows back-to-back
@@ -327,6 +328,17 @@ no later than 30 minutes before the next event. The widening happens once, in
 mode — agree. It applies to every event on the calendar, not only bookings made
 here, the same way Calendly's buffers do. Buffers may spill past working hours,
 and they are never written to the calendar.
+
+**The daily break.** `DAILY_BREAK` in `config.ts` carves an hour out of the
+middle of every day — lunch, a school run, a nap. Working hours then come in two
+pieces, and only what fits inside one of them is offered: with
+`{ start: 12, end: 13 }`, 11:00–12:00 and 13:00–14:00 are bookable but
+11:30–12:30 is not, and a 90-minute meeting starting at 11:00 is refused. It is
+a *closed* stretch of the day, not a busy block, so unlike a calendar event it
+grows no buffer around itself and eats nothing on either side. The Find slots
+text reports it as a gap (`09:00 - 12:00` then `13:00 - 20:00`), and the hours
+line under the heading is generated from the same ranges, so it cannot disagree
+with what the picker offers. Leave it `null` and the day stays in one piece.
 
 The client fetches all seven visible days in parallel and counts the
 `available` slots per day to fill in the day strip. Weeks already seen are kept,

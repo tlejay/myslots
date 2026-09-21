@@ -27,6 +27,16 @@ export const DEFAULT_DURATION: Duration = 60
 export const WEEKDAY_HOURS = { start: 9, end: 20 }
 export const WEEKEND_HOURS = { start: 10, end: 20 }
 
+/**
+ * A break kept clear every day of the week, 24h — lunch, a school run, a nap.
+ * A meeting may finish at `start` and the next may begin at `end`, but nothing
+ * is offered that runs across the middle. Unlike the buffers below this is a
+ * closed stretch of the day, not a busy block: no buffer is grown around it, so
+ * with `{ start: 12, end: 13 }` both 11:00-12:00 and 13:00-14:00 stay bookable
+ * while 11:30-12:30 does not. `null` keeps the day in one piece.
+ */
+export const DAILY_BREAK: { start: number; end: number } | null = null
+
 /** How the slot grid is stepped and paged. */
 export const SLOT_STEP_MINUTES = 30
 export const RANGE_DAYS = 7      // days visible in the strip at once
@@ -53,10 +63,32 @@ export function hoursFor(dow: number) {
   return isWeekend(dow) ? WEEKEND_HOURS : WEEKDAY_HOURS
 }
 
-/** "Mon–Fri 09:00–20:00 · Sat–Sun 10:00–20:00 (GMT+7)" */
+/**
+ * The day's working hours with the daily break cut out, earliest first — one
+ * range while `DAILY_BREAK` is null or falls outside the day, two otherwise.
+ * Every part of the app that lays out a day walks these instead of a single
+ * open/close pair.
+ */
+export function openHoursFor(dow: number): { start: number; end: number }[] {
+  const day = hoursFor(dow)
+  if (!DAILY_BREAK || DAILY_BREAK.end <= day.start || DAILY_BREAK.start >= day.end) return [day]
+
+  const ranges: { start: number; end: number }[] = []
+  if (DAILY_BREAK.start > day.start) ranges.push({ start: day.start, end: DAILY_BREAK.start })
+  if (DAILY_BREAK.end < day.end) ranges.push({ start: DAILY_BREAK.end, end: day.end })
+  return ranges
+}
+
+/**
+ * "Mon–Fri 09:00–20:00 · Sat–Sun 10:00–20:00 (GMT+7)", or with a break set,
+ * "Mon–Fri 09:00–12:00, 13:00–20:00 · …"
+ *
+ * Read off `openHoursFor`, so the break shows up as a gap and the label can
+ * never drift away from what the picker actually offers.
+ */
 export function workingHoursLabel(): string {
   const f = (h: number) => `${String(h).padStart(2, '0')}:00`
-  const weekday = `Mon–Fri ${f(WEEKDAY_HOURS.start)}–${f(WEEKDAY_HOURS.end)}`
-  const weekend = `Sat–Sun ${f(WEEKEND_HOURS.start)}–${f(WEEKEND_HOURS.end)}`
-  return `${weekday} · ${weekend} (${TIME_ZONE_LABEL})`
+  const ranges = (dow: number) =>
+    openHoursFor(dow).map(r => `${f(r.start)}–${f(r.end)}`).join(', ')
+  return `Mon–Fri ${ranges(1)} · Sat–Sun ${ranges(6)} (${TIME_ZONE_LABEL})`
 }

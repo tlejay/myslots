@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { busyBetween, isCalendarConfigured } from '@/lib/google-calendar'
 import { DURATIONS, SLOT_STEP_MINUTES } from '@/lib/config'
-import { DATE_KEY_RE, addDaysToKey, hhmm, localInstant, openingMinutes } from '@/lib/booking-time'
+import { DATE_KEY_RE, addDaysToKey, hhmm, localInstant, openSegments } from '@/lib/booking-time'
 
 /** Every candidate slot for the day, before the calendar is consulted. */
 function generateSlots(date: string, durationMin: number) {
-  const { open, close } = openingMinutes(date)
   const slots: { start: string; display: string }[] = []
-  // A meeting may not run past closing time.
-  for (let m = open; m + durationMin <= close; m += SLOT_STEP_MINUTES) {
-    slots.push({ start: localInstant(date, m).toISOString(), display: hhmm(m) })
+  // One pass per open stretch of the day, so nothing is offered that would run
+  // past closing time or across the daily break.
+  for (const { open, close } of openSegments(date)) {
+    for (let m = open; m + durationMin <= close; m += SLOT_STEP_MINUTES) {
+      slots.push({ start: localInstant(date, m).toISOString(), display: hhmm(m) })
+    }
   }
   return slots
 }

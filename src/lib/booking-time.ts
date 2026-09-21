@@ -5,7 +5,7 @@ import {
   SLOT_STEP_MINUTES,
   TIME_ZONE,
   UTC_OFFSET,
-  hoursFor,
+  openHoursFor,
 } from './config'
 
 // Wall-clock arithmetic for the booking calendar. Everything here works in the
@@ -90,10 +90,15 @@ export function bookingHorizon(now = new Date()): { first: string; last: string 
   return { first, last: addDaysToKey(first, MAX_DAYS_AHEAD - 1) }
 }
 
-/** Opening and closing time of `dateKey`, in minutes since local midnight. */
-export function openingMinutes(dateKey: string): { open: number; close: number } {
-  const { start, end } = hoursFor(dayOfWeek(dateKey))
-  return { open: start * 60, close: end * 60 }
+/**
+ * The stretches of `dateKey` open for meetings, in minutes since local midnight
+ * and earliest first: working hours with the daily break taken out.
+ */
+export function openSegments(dateKey: string): { open: number; close: number }[] {
+  return openHoursFor(dayOfWeek(dateKey)).map(({ start, end }) => ({
+    open: start * 60,
+    close: end * 60,
+  }))
 }
 
 /**
@@ -102,32 +107,36 @@ export function openingMinutes(dateKey: string): { open: number; close: number }
  * slot grid, so every window starts and ends on a time the booking page offers.
  */
 export function freeWindows(dateKey: string, busy: Interval[], now = new Date()): FreeWindow[] {
-  const { open, close } = openingMinutes(dateKey)
   const midnight = localInstant(dateKey, 0).getTime()
   const toMinutes = (d: Date) => (d.getTime() - midnight) / 60_000
 
   const ceil = (m: number) => Math.ceil(m / SLOT_STEP_MINUTES) * SLOT_STEP_MINUTES
   const floor = (m: number) => Math.floor(m / SLOT_STEP_MINUTES) * SLOT_STEP_MINUTES
 
-  let cursor = ceil(Math.max(open, toMinutes(now)))
-  const blocks = busy
-    .map(b => ({ start: toMinutes(b.start), end: toMinutes(b.end) }))
-    .filter(b => b.end > cursor && b.start < close)
-    .sort((a, b) => a.start - b.start)
-
   const windows: FreeWindow[] = []
-  const push = (from: number, to: number) => {
-    const s = ceil(from)
-    const e = floor(Math.min(to, close))
-    if (e > s) windows.push({ start: hhmm(s), end: hhmm(e) })
-  }
 
-  for (const block of blocks) {
-    if (block.start > cursor) push(cursor, block.start)
-    cursor = Math.max(cursor, block.end)
-    if (cursor >= close) break
+  // Each open stretch is walked on its own, so the daily break comes out as a
+  // gap between two windows rather than being papered over.
+  for (const { open, close } of openSegments(dateKey)) {
+    let cursor = ceil(Math.max(open, toMinutes(now)))
+    const blocks = busy
+      .map(b => ({ start: toMinutes(b.start), end: toMinutes(b.end) }))
+      .filter(b => b.end > cursor && b.start < close)
+      .sort((a, b) => a.start - b.start)
+
+    const push = (from: number, to: number) => {
+      const s = ceil(Math.max(from, open))
+      const e = floor(Math.min(to, close))
+      if (e > s) windows.push({ start: hhmm(s), end: hhmm(e) })
+    }
+
+    for (const block of blocks) {
+      if (block.start > cursor) push(cursor, block.start)
+      cursor = Math.max(cursor, block.end)
+      if (cursor >= close) break
+    }
+    if (cursor < close) push(cursor, close)
   }
-  if (cursor < close) push(cursor, close)
 
   return windows
 }
@@ -147,8 +156,16 @@ export function slotProblem(start: Date, durationMin: number, now = new Date()):
     return `Meetings start on the ${SLOT_STEP_MINUTES}-minute mark`
   }
 
-  const { open, close } = openingMinutes(dateKey)
+  const segments = openSegments(dateKey)
+  if (segments.length === 0) return 'Bookings are closed that day'
+
+  const open = segments[0].open
+  const close = segments[segments.length - 1].close
   if (minutes < open) return 'That time is before working hours'
   if (minutes + durationMin > close) return 'That time runs past working hours'
+  // Left over: it starts inside the day but crosses a closed stretch of it.
+  if (!segments.some(s => minutes >= s.open && minutes + durationMin <= s.close)) {
+    return 'That time runs into the daily break'
+  }
   return null
 }
