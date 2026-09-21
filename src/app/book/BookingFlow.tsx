@@ -841,9 +841,7 @@ function PageHeader({ onFindSlots }: { onFindSlots?: () => void }) {
     <div className="mb-6 flex items-start justify-between gap-4">
       <div className="min-w-0">
         <h1 className="text-2xl sm:text-3xl font-bold mb-1">Book a Meeting</h1>
-        <p className="text-sm text-[var(--color-muted-light)]">
-          Schedule a call with {HOST_NAME} · {workingHoursLabel()}
-        </p>
+        <p className="text-sm text-[var(--color-muted-light)]">{workingHoursLabel()}</p>
       </div>
       {/* Disabled until hydration, but drawn from the start so nothing shifts */}
       <button

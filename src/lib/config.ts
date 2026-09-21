@@ -79,16 +79,42 @@ export function openHoursFor(dow: number): { start: number; end: number }[] {
   return ranges
 }
 
+/** 9 → "9am", 12 → "12pm", 20 → "8pm". Whole hours; a half hour reads "9.5am". */
+function clock(hour: number): string {
+  const suffix = hour < 12 ? 'am' : 'pm'
+  const twelve = hour % 12 === 0 ? 12 : hour % 12
+  return `${twelve}${suffix}`
+}
+
+/** "9am–8pm", tightened to "1–8pm" when both ends sit in the same half of the day. */
+function span(from: number, to: number): string {
+  const a = clock(from)
+  const b = clock(to)
+  return a.slice(-2) === b.slice(-2) ? `${a.slice(0, -2)}–${b}` : `${a}–${b}`
+}
+
 /**
- * "Mon–Fri 09:00–20:00 · Sat–Sun 10:00–20:00 (GMT+7)", or with a break set,
- * "Mon–Fri 09:00–12:00, 13:00–20:00 · …"
+ * The one-line answer to "when can I have you?", written the way it would be
+ * said out loud:
  *
- * Read off `openHoursFor`, so the break shows up as a gap and the label can
- * never drift away from what the picker actually offers.
+ *   "Alex is available weekdays 9am–8pm and weekends 10am–8pm. All times GMT+7."
+ *
+ * With `DAILY_BREAK` set it gains a clause: "… and weekends 10am–8pm, with a
+ * break (12–1pm). All times GMT+7."
+ *
+ * Every number is read off `openHoursFor`, so the sentence cannot promise a
+ * time the picker would not offer. A day split by the break is described by its
+ * outer edges — the break gets its own clause rather than turning the hours into
+ * a list of ranges to parse.
  */
 export function workingHoursLabel(): string {
-  const f = (h: number) => `${String(h).padStart(2, '0')}:00`
-  const ranges = (dow: number) =>
-    openHoursFor(dow).map(r => `${f(r.start)}–${f(r.end)}`).join(', ')
-  return `Mon–Fri ${ranges(1)} · Sat–Sun ${ranges(6)} (${TIME_ZONE_LABEL})`
+  const outer = (dow: number) => {
+    const ranges = openHoursFor(dow)
+    return span(ranges[0].start, ranges[ranges.length - 1].end)
+  }
+  // Only worth a clause on a week where it actually splits a day in two.
+  const splits = [1, 6].some(dow => openHoursFor(dow).length > 1)
+  const brk = DAILY_BREAK && splits ? `, with a break (${span(DAILY_BREAK.start, DAILY_BREAK.end)})` : ''
+
+  return `${HOST_NAME} is available weekdays ${outer(1)} and weekends ${outer(6)}${brk}. All times ${TIME_ZONE_LABEL}.`
 }

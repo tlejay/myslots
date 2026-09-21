@@ -200,7 +200,7 @@ is sent.
 Then make it yours in [`src/lib/config.ts`](src/lib/config.ts):
 
 ```ts
-export const HOST_NAME = 'Alex'          // "Schedule a call with Alex"
+export const HOST_NAME = 'Alex'          // "Alex is available weekdays 9am–8pm…"
 export const BRAND_NAME = 'MySlots'      // nav label
 export const DURATIONS = [30, 60, 90]    // meeting lengths offered
 export const WEEKDAY_HOURS = { start: 9, end: 20 }
