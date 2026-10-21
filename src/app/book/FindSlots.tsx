@@ -91,8 +91,11 @@ export function FindSlots({
   const onlyWeekends = !loading && result?.days && result.days.length > 0 && shownDays.length === 0
 
   // Written as the address people will actually type: no scheme, no "www.",
-  // no trailing slash.
-  const bookingLink = `${window.location.host.replace(/^www\./, '')}${window.location.pathname}`.replace(/\/$/, '')
+  // no trailing slash. In person, it opens the page on the same city the text
+  // is about, so nobody lands on online and books the wrong kind.
+  const host = window.location.host.replace(/^www\./, '')
+  const path = window.location.pathname.replace(/\/$/, '')
+  const bookingLink = onsiteIn ? `${host}${path || '/'}?mode=onsite&city=${onsiteIn}` : `${host}${path}`
 
   const text =
     !loading && result?.days && duration && shownDays.length > 0
