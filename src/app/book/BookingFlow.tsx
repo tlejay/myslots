@@ -6,16 +6,23 @@ import { FindSlots } from './FindSlots'
 import {
   ADD_GOOGLE_MEET,
   BRAND_NAME,
+  CITIES,
   DEFAULT_DURATION,
+  DEFAULT_MODE,
   DURATIONS,
   Duration,
   HOST_NAME,
   MAX_DAYS_AHEAD,
+  MAX_PLACE_LENGTH,
   RANGE_DAYS,
   TIME_ZONE,
   TIME_ZONE_LABEL,
   UTC_OFFSET,
+  cityById,
+  isCityId,
   workingHoursLabel,
+  type CityId,
+  type MeetingMode,
 } from '@/lib/config'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -25,19 +32,39 @@ interface SlotInfo { iso: string; display: string; reason: SlotReason }
 type DaySlots = SlotInfo[]              // ordered by time
 type RangeData = Map<string, DaySlots>  // dateKey → slots
 
+/** What the availability endpoint said about one day. */
+interface DayData {
+  slots: DaySlots
+  /**
+   * In person only: the chosen city when the host is there for part of the day
+   * or more, else the listed city they are in instead; null when that is
+   * somewhere else, or online.
+   */
+  hostCity: CityId | null
+  /** In person only: the stretches of the day the host is in the chosen city, local HH:MM. */
+  presence: { start: string; end: string }[]
+}
+
 interface SelectedSlot { iso: string; dateKey: string }
 
 interface FormData {
   name: string
   email: string
   topic: string
+  /** In person only: where to meet, as the visitor types it. */
+  place: string
 }
 
 interface Booked {
   iso: string
   duration: Duration
   meetLink: string | null
+  /** Set for an in-person booking. */
+  onsite: { city: CityId; place: string } | null
 }
+
+/** Why the visitor was sent back from the details step to pick again. */
+type Bounce = 'taken' | 'away' | null
 
 type Step = 'pick' | 'details' | 'confirmed'
 
@@ -101,14 +128,27 @@ function rangeKeys(from: Date): string[] {
   return Array.from({ length: RANGE_DAYS }, (_, i) => toDateKey(addDays(from, i)))
 }
 
+/**
+ * When the host is in the chosen city, as the day's heading says it: empty for
+ * all day, else " from 10:00", " until 14:00" or " 10:00–22:00".
+ */
+function presenceLabel(presence: DayData['presence'] | undefined): string {
+  if (!presence || presence.length === 0) return ''
+  if (presence.length === 1 && presence[0].start === '00:00' && presence[0].end === '24:00') return ''
+  return ' ' + presence
+    .map(p => (p.start === '00:00' ? `until ${p.end}` : p.end === '24:00' ? `from ${p.start}` : `${p.start}–${p.end}`))
+    .join(' and ')
+}
+
 function countAvailable(slots: DaySlots | undefined): number {
   return slots ? slots.filter(s => s.reason === 'available').length : 0
 }
 
 // ─── Shareable link ───────────────────────────────────────────────────────────
 // The picker keeps its whole state in the query string — /book?date=2026-09-10
-// &duration=60&time=14:00 — so any view can be copied and sent to someone else
-// without a route having to exist for it.
+// &duration=60&time=14:00, led by mode=onsite&city=uptown for in person — so
+// any view can be copied and sent to someone else without a route having to
+// exist for it.
 
 const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_PARAM_RE = /^\d{2}:\d{2}$/
@@ -117,9 +157,11 @@ interface UrlState {
   dateKey: string | null
   duration: Duration | null
   time: string | null
+  mode: MeetingMode | null
+  city: CityId | null
 }
 
-const NO_LINK: UrlState = { dateKey: null, duration: null, time: null }
+const NO_LINK: UrlState = { dateKey: null, duration: null, time: null, mode: null, city: null }
 
 function readUrlState(search: string, today: Date): UrlState {
   const params = new URLSearchParams(search)
@@ -140,15 +182,25 @@ function readUrlState(search: string, today: Date): UrlState {
 
   const rawTime = params.get('time') ?? ''
 
-  return { dateKey, duration, time: dateKey && TIME_PARAM_RE.test(rawTime) ? rawTime : null }
+  const mode = params.get('mode') === 'onsite' ? 'onsite' : params.get('mode') === 'online' ? 'online' : null
+  const rawCity = params.get('city')
+  const city = mode === 'onsite' && isCityId(rawCity) ? rawCity : null
+
+  return { dateKey, duration, time: dateKey && TIME_PARAM_RE.test(rawTime) ? rawTime : null, mode, city }
 }
 
 // Written by hand rather than through URLSearchParams so the colon in the time
 // stays a colon — a link people are meant to read and paste should look like
 // one. Every value here is produced by the picker, so none of it needs escaping.
-function buildUrl(dateKey: string, duration: Duration, time: string | null): string {
-  const query = `date=${dateKey}&duration=${duration}${time ? `&time=${time}` : ''}`
+function buildUrl(dateKey: string, duration: Duration, time: string | null, onsiteIn: CityId | null): string {
+  const kind = onsiteIn ? `mode=onsite&city=${onsiteIn}&` : ''
+  const query = `${kind}date=${dateKey}&duration=${duration}${time ? `&time=${time}` : ''}`
   return `${window.location.pathname}?${query}`
+}
+
+/** The query that tells the availability endpoints which kind of meeting is wanted. */
+function kindQuery(onsiteIn: CityId | null): string {
+  return onsiteIn ? `&mode=onsite&city=${onsiteIn}` : ''
 }
 
 // ─── Hydration ────────────────────────────────────────────────────────────────
@@ -180,18 +232,20 @@ export function BookingFlow() {
   // during render rather than settled in effects once data lands.
   const [rangeChoice, setRangeChoice] = useState<Date | null>(null)
   const [durationChoice, setDurationChoice] = useState<Duration | null>(null)
+  const [modeChoice, setModeChoice] = useState<MeetingMode | null>(null)
+  const [cityChoice, setCityChoice] = useState<CityId | null>(null)
   const [dayChoice, setDayChoice] = useState<string | null>(null)
   // `undefined` until the visitor touches anything, so a time named by the link
   // still applies; `null` once it has been cleared.
   const [slotChoice, setSlotChoice] = useState<SelectedSlot | null | undefined>(undefined)
 
-  // Availability per `${duration}:${dateKey}`. A key that is absent is loading;
-  // a week already seen comes back instantly.
-  const [cache, setCache] = useState<Map<string, DaySlots>>(() => new Map())
+  // Availability per `${kind}:${duration}:${dateKey}`. A key that is absent is
+  // loading; a week already seen comes back instantly.
+  const [cache, setCache] = useState<Map<string, DayData>>(() => new Map())
   const inFlight = useRef(new Set<string>())
 
   const [step, setStep] = useState<Step>('pick')
-  const [form, setForm] = useState<FormData>({ name: '', email: '', topic: '' })
+  const [form, setForm] = useState<FormData>({ name: '', email: '', topic: '', place: '' })
   // Empty until someone asks for a guest field — the row only exists on request.
   const [guests, setGuests] = useState<string[]>([])
   // Remembers how many tiles the grid last held, so the loading skeleton keeps
@@ -199,13 +253,20 @@ export function BookingFlow() {
   const [skeletonCount, setSkeletonCount] = useState(12)
   const [booking, setBooking] = useState(false)
   const [bookError, setBookError] = useState<string | null>(null)
-  const [slotTaken, setSlotTaken] = useState(false)
+  const [bounce, setBounce] = useState<Bounce>(null)
   const [booked, setBooked] = useState<Booked | null>(null)
   const [findOpen, setFindOpen] = useState(false)
 
   // ─── Derived picker state ────────────────────────────────────────────────────
 
   const duration = durationChoice ?? linked.duration ?? DEFAULT_DURATION
+  const mode = modeChoice ?? linked.mode ?? DEFAULT_MODE
+  // In person, nothing is shown until the visitor says which city — the open
+  // days depend on it.
+  const city = mode === 'onsite' ? cityChoice ?? linked.city : null
+  const onsiteIn = mode === 'onsite' ? city : null
+  const needsCity = mode === 'onsite' && !city
+  const kindKey = onsiteIn ? `onsite-${onsiteIn}` : 'online'
   // The strip starts at today — nobody books backwards — or on the day a
   // shared link names, so it is the first tile people see.
   const rangeStart = rangeChoice ?? (linked.dateKey ? fromDateKey(linked.dateKey) : today)
@@ -213,13 +274,20 @@ export function BookingFlow() {
   const keys = rangeKeys(rangeStart)
 
   const rangeData: RangeData = new Map()
+  const hostCities = new Map<string, CityId | null>()
+  const presences = new Map<string, DayData['presence']>()
   const loadingDays = new Set<string>()
   for (const k of keys) {
-    const slots = cache.get(`${duration}:${k}`)
-    if (slots) rangeData.set(k, slots)
-    else loadingDays.add(k)
+    const day = cache.get(`${kindKey}:${duration}:${k}`)
+    if (day) {
+      rangeData.set(k, day.slots)
+      hostCities.set(k, day.hostCity)
+      presences.set(k, day.presence)
+    } else {
+      loadingDays.add(k)
+    }
   }
-  const rangeLoading = loadingDays.size > 0
+  const rangeLoading = !needsCity && loadingDays.size > 0
 
   // Land on a day that actually has openings, so the time list is never empty
   // on arrival: the day picked (or linked) if it has any, else the first that does.
@@ -256,24 +324,26 @@ export function BookingFlow() {
   // Fetch whatever the visible week is missing. Results land in the cache; the
   // view above re-derives from it.
   useEffect(() => {
-    if (!hydrated) return
+    if (!hydrated || needsCity) return
     for (const k of rangeKeys(fromDateKey(rangeStartKey))) {
-      const key = `${duration}:${k}`
+      const key = `${kindKey}:${duration}:${k}`
       if (cache.has(key) || inFlight.current.has(key)) continue
       inFlight.current.add(key)
-      fetch(`/api/availability?date=${k}&duration=${duration}`)
+      fetch(`/api/availability?date=${k}&duration=${duration}${kindQuery(onsiteIn)}`)
         .then(res => res.json())
-        .then(data =>
-          ((data.slots ?? []) as { start: string; display: string; reason: SlotReason }[])
-            .map((s): SlotInfo => ({ iso: s.start, display: s.display, reason: s.reason }))
-        )
-        .catch((): DaySlots => [])
-        .then(daySlots => {
+        .then((data): DayData => ({
+          slots: ((data.slots ?? []) as { start: string; display: string; reason: SlotReason }[])
+            .map((s): SlotInfo => ({ iso: s.start, display: s.display, reason: s.reason })),
+          hostCity: isCityId(data.hostCity) ? data.hostCity : null,
+          presence: Array.isArray(data.presence) ? data.presence : [],
+        }))
+        .catch((): DayData => ({ slots: [], hostCity: null, presence: [] }))
+        .then(day => {
           inFlight.current.delete(key)
-          setCache(prev => new Map(prev).set(key, daySlots))
+          setCache(prev => new Map(prev).set(key, day))
         })
     }
-  }, [hydrated, rangeStartKey, duration, cache])
+  }, [hydrated, needsCity, rangeStartKey, duration, kindKey, onsiteIn, cache])
 
   // Keep the address bar in step with the picker so whatever is on screen is
   // always the thing that gets copied. Nothing is written while the week is
@@ -285,9 +355,9 @@ export function BookingFlow() {
     if (!hydrated || rangeLoading || !selectedDay) return
     window.history.replaceState(
       null, '',
-      buildUrl(selectedDay, duration, selectedIso ? fmtSlot(selectedIso) : null),
+      buildUrl(selectedDay, duration, selectedIso ? fmtSlot(selectedIso) : null, onsiteIn),
     )
-  }, [hydrated, rangeLoading, selectedDay, duration, selectedIso])
+  }, [hydrated, rangeLoading, selectedDay, duration, selectedIso, onsiteIn])
 
   // ─── Actions ─────────────────────────────────────────────────────────────────
 
@@ -299,7 +369,7 @@ export function BookingFlow() {
   const pickDay = (key: string) => {
     setDayChoice(key)
     setSlotChoice(null)
-    setSlotTaken(false)
+    setBounce(null)
   }
 
   const pickDuration = (d: Duration) => {
@@ -307,11 +377,23 @@ export function BookingFlow() {
     setSlotChoice(null)
   }
 
+  const pickMode = (m: MeetingMode) => {
+    setModeChoice(m)
+    setSlotChoice(null)
+    setBounce(null)
+  }
+
+  const pickCity = (c: CityId) => {
+    setCityChoice(c)
+    setSlotChoice(null)
+    setBounce(null)
+  }
+
   /** Drops what is known about a day, so the next render fetches it afresh. */
   const forgetDay = (dateKey: string) => {
     setCache(prev => {
       const next = new Map(prev)
-      for (const d of DURATIONS) next.delete(`${d}:${dateKey}`)
+      for (const key of prev.keys()) if (key.endsWith(`:${dateKey}`)) next.delete(key)
       return next
     })
   }
@@ -327,24 +409,35 @@ export function BookingFlow() {
   )
   const guestsValid = guests.every(g => !g.trim() || EMAIL_RE.test(g.trim()))
 
+  const placeValid = !onsiteIn || Boolean(form.place.trim())
+  const canBook = Boolean(form.name.trim() && form.email.trim() && guestsValid && placeValid)
+
   const handleBook = async () => {
-    if (!selectedSlot || !form.name.trim() || !form.email.trim() || !guestsValid) return
+    if (!selectedSlot || !canBook) return
     setBooking(true)
     setBookError(null)
     try {
+      const { place, ...details } = form
       const res = await fetch('/api/book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startTime: selectedSlot.iso, duration, ...form, guests: cleanGuests }),
+        body: JSON.stringify({
+          startTime: selectedSlot.iso,
+          duration,
+          ...details,
+          guests: cleanGuests,
+          ...(onsiteIn ? { mode: 'onsite', city: onsiteIn, place: place.trim() } : { mode: 'online' }),
+        }),
       })
       const data = await res.json().catch(() => ({}))
 
       if (res.status === 409) {
-        // Someone else got there first. Back to the times, refreshed, with the
-        // form kept as typed so picking again costs one tap.
+        // Someone else got there first, or the host's plans for that day moved.
+        // Back to the times, refreshed, with the form kept as typed so picking
+        // again costs one tap.
         forgetDay(selectedSlot.dateKey)
         setSlotChoice(null)
-        setSlotTaken(true)
+        setBounce(data.reason === 'away' ? 'away' : 'taken')
         setStep('pick')
         return
       }
@@ -354,7 +447,12 @@ export function BookingFlow() {
       }
       if (!res.ok) throw new Error()
 
-      setBooked({ iso: selectedSlot.iso, duration, meetLink: data.meetLink ?? null })
+      setBooked({
+        iso: selectedSlot.iso,
+        duration,
+        meetLink: data.meetLink ?? null,
+        onsite: onsiteIn ? { city: onsiteIn, place: form.place.trim() } : null,
+      })
       setStep('confirmed')
     } catch {
       setBookError(`Something went wrong on our side, and nothing was booked. Please try again in a moment.`)
@@ -387,6 +485,11 @@ export function BookingFlow() {
               <DetailRow label="Date" value={fmtLong(booked.iso)} />
               <DetailRow label="Time" value={`${fmtSlot(booked.iso)} – ${fmtSlotEnd(booked.iso, booked.duration)} (${TIME_ZONE_LABEL})`} />
               <DetailRow label="Duration" value={`${booked.duration} minutes`} />
+              <DetailRow
+                label="How"
+                value={booked.onsite ? `In person · ${cityById(booked.onsite.city).label}` : `Online${ADD_GOOGLE_MEET ? ' · Google Meet' : ''}`}
+              />
+              {booked.onsite && <DetailRow label="Where" value={booked.onsite.place} />}
               {form.topic && <DetailRow label="Topic" value={form.topic} />}
               {cleanGuests.length > 0 && (
                 <DetailRow
@@ -444,6 +547,9 @@ export function BookingFlow() {
             <p className="text-sm text-[var(--color-muted-light)]">
               {fmtLong(selectedSlot.iso)} · {fmtSlot(selectedSlot.iso)} {TIME_ZONE_LABEL} · {duration} min
             </p>
+            <p className="text-sm text-[var(--color-muted-light)] mt-0.5">
+              {onsiteIn ? `In person in ${cityById(onsiteIn).label}` : `Online${ADD_GOOGLE_MEET ? ' · Google Meet' : ''}`}
+            </p>
           </div>
 
           <div className="space-y-4">
@@ -453,7 +559,7 @@ export function BookingFlow() {
                 value={form.name}
                 onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 placeholder="John"
-                className="w-full px-4 py-3 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
+                className="w-full px-4 py-3 text-base rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
               />
             </FormField>
             <FormField label="Your Email" required>
@@ -462,9 +568,25 @@ export function BookingFlow() {
                 value={form.email}
                 onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
                 placeholder="you@example.com"
-                className="w-full px-4 py-3 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
+                className="w-full px-4 py-3 text-base rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
               />
             </FormField>
+
+            {onsiteIn && (
+              <FormField label={`Where to meet in ${cityById(onsiteIn).label}`} required>
+                <input
+                  type="text"
+                  value={form.place}
+                  maxLength={MAX_PLACE_LENGTH}
+                  onChange={e => setForm(f => ({ ...f, place: e.target.value }))}
+                  placeholder="e.g. your office address, or a café"
+                  className="w-full px-4 py-3 text-base rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
+                />
+                <p className="text-xs text-[var(--color-muted)]">
+                  A place name, an address or a map link — it goes on the invite as the location.
+                </p>
+              </FormField>
+            )}
 
             {guests.length > 0 && (
               <FormField label={guests.length === 1 ? 'Guest' : 'Guests'}>
@@ -481,7 +603,7 @@ export function BookingFlow() {
                             setGuests(g => g.map((v, j) => (j === i ? e.target.value : v)))
                           }
                           placeholder="guest@example.com"
-                          className={`flex-1 min-w-0 px-4 py-3 rounded-xl bg-[var(--color-surface)] border text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none transition-colors ${
+                          className={`flex-1 min-w-0 px-4 py-3 text-base rounded-xl bg-[var(--color-surface)] border text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none transition-colors ${
                             invalid
                               ? 'border-red-400/60 focus:border-red-400'
                               : 'border-[var(--color-border)] focus:border-[var(--color-accent)]'
@@ -522,7 +644,7 @@ export function BookingFlow() {
                 value={form.topic}
                 onChange={e => setForm(f => ({ ...f, topic: e.target.value }))}
                 placeholder="e.g. Product consulting, Tech advice..."
-                className="w-full px-4 py-3 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
+                className="w-full px-4 py-3 text-base rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-foreground)] placeholder:text-[var(--color-muted)] focus:outline-none focus:border-[var(--color-accent)] transition-colors"
               />
             </FormField>
           </div>
@@ -535,14 +657,14 @@ export function BookingFlow() {
 
           <button
             onClick={handleBook}
-            disabled={booking || !form.name.trim() || !form.email.trim() || !guestsValid}
+            disabled={booking || !canBook}
             className="w-full py-3.5 rounded-full bg-[var(--color-accent)] text-white font-semibold text-sm hover:opacity-90 disabled:opacity-40 transition-opacity"
           >
             {booking ? 'Booking...' : 'Confirm Booking →'}
           </button>
 
           <p className="text-xs text-center text-[var(--color-muted)]">
-            A Google Calendar invite{ADD_GOOGLE_MEET && ' with a Google Meet link'} will be sent to {HOST_NAME}, you{cleanGuests.length > 0 &&
+            A Google Calendar invite{onsiteIn ? ' with the meeting place' : ADD_GOOGLE_MEET && ' with a Google Meet link'} will be sent to {HOST_NAME}, you{cleanGuests.length > 0 &&
               ` and ${cleanGuests.length} guest${cleanGuests.length === 1 ? '' : 's'}`}.
           </p>
         </div>
@@ -575,219 +697,263 @@ export function BookingFlow() {
   const openSlots = daySlots.filter(s => s.reason === 'available')
   const rangeTotal = keys.reduce((sum, k) => sum + countAvailable(rangeData.get(k)), 0)
 
+  // In person: how many of the visible days the host is in the chosen city.
+  const placeName = onsiteIn ? cityById(onsiteIn).label : null
+  const daysThere = onsiteIn ? keys.filter(k => hostCities.get(k) === onsiteIn).length : RANGE_DAYS
+
   return (
     <PageShell>
       <div className={`max-w-3xl mx-auto px-4 sm:px-6 py-8 ${selectedSlot ? 'pb-44' : ''}`}>
 
         <PageHeader onFindSlots={() => setFindOpen(true)} />
 
-        {/* Step 1 — pick a day */}
-        <div className="flex flex-wrap items-center gap-3 mb-2">
-          <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium">
-            1 · Pick a day
-          </p>
+        {/* Step 1 — online or in person. It decides which days open below, so
+            it sits directly on top of them. */}
+        <MeetingKindPicker mode={mode} city={city} onMode={pickMode} onCity={pickCity} />
 
-          <div className="flex items-center gap-2 ml-auto">
-            <button
-              onClick={() => {
-                if (!atToday) setRangeChoice(today)
-                pickDay(todayKey)
-              }}
-              disabled={atTodayView}
-              className={`px-3 py-1 rounded-full border text-xs font-semibold transition-all ${
-                atTodayView
-                  ? 'border-[var(--color-border)] text-[var(--color-muted)] opacity-40 cursor-not-allowed'
-                  : 'border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 cursor-pointer'
-              }`}
-            >
-              Today
-            </button>
-            <button
-              onClick={() => {
-                const back = addDays(rangeStart, -RANGE_DAYS)
-                goToRange(back < today ? today : back)
-              }}
-              disabled={atToday}
-              aria-label="Earlier days"
-              className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-25 disabled:cursor-not-allowed transition-all"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-              </svg>
-            </button>
-            <span className="text-sm font-semibold min-w-[152px] text-center tabular-nums">
-              {fmtRangeHeader(rangeStart)}
-            </span>
-            <button
-              onClick={() => goToRange(addDays(rangeStart, RANGE_DAYS))}
-              disabled={nextDisabled}
-              aria-label="Later days"
-              className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-25 disabled:cursor-not-allowed transition-all"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
-          {rangeDays.map((day) => {
-            const key = toDateKey(day)
-            const isToday = key === todayKey
-            const loading = loadingDays.has(key)
-            const count = countAvailable(rangeData.get(key))
-            const isSelected = key === selectedDay
-            const disabled = loading || count === 0
-
-            return (
-              <button
-                key={key}
-                onClick={() => pickDay(key)}
-                disabled={disabled}
-                className={`rounded-xl border py-2.5 px-1 text-center transition-all ${
-                  isSelected
-                    ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10'
-                    : disabled
-                      ? 'border-[var(--color-border)] opacity-45 cursor-not-allowed'
-                      : 'border-[var(--color-border)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--hover-bg)] cursor-pointer'
-                }`}
-              >
-                <div className={`text-[10px] uppercase tracking-widest font-medium ${
-                  isToday ? 'text-[var(--color-accent-light)]' : 'text-[var(--color-muted)]'
-                }`}>
-                  {isToday ? 'Today' : DAY_ABBR[day.getDay()]}
-                </div>
-                <div className={`text-lg sm:text-xl font-bold leading-tight tabular-nums ${
-                  isSelected ? 'text-[var(--color-accent)]' : 'text-[var(--color-foreground)]'
-                }`}>
-                  {day.getDate()}
-                </div>
-                <div className="mt-1 text-[10px] sm:text-[11px] leading-tight">
-                  {loading ? (
-                    <span className="inline-block w-8 h-2.5 rounded-full bg-[var(--color-border)] animate-pulse" />
-                  ) : count > 0 ? (
-                    <span className="text-emerald-500 font-semibold tabular-nums">
-                      {count}<span className="hidden sm:inline"> free</span>
-                    </span>
-                  ) : (
-                    <span className="text-[var(--color-muted)]">—</span>
-                  )}
-                </div>
-              </button>
-            )
-          })}
-        </div>
-
-        {/* Always rendered so switching meeting length never collapses this row */}
-        <p className="mt-2 px-1 text-xs text-[var(--color-muted)]">
-          {rangeLoading ? (
-            <Bar className="h-3 w-44" />
-          ) : rangeTotal > 0 ? (
-            `${rangeTotal} slot${rangeTotal === 1 ? '' : 's'} open in these ${RANGE_DAYS} days`
-          ) : (
-            `No openings in these ${RANGE_DAYS} days`
-          )}
-        </p>
-
-        {/* Step 2 — pick a time */}
-        <div className="mt-6">
-          <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium mb-2">
-            2 · Pick a time
-          </p>
-
-          {slotTaken && (
-            <p className="mb-3 text-sm text-[var(--color-foreground)] bg-amber-400/15 border border-amber-400/40 rounded-xl px-4 py-3">
-              That time was just booked by someone else. The times below are up to date — please pick another.
+        {needsCity ? (
+          <div className="rounded-2xl border border-dashed border-[var(--color-border)] px-4 py-10 text-center">
+            <p className="text-sm text-[var(--color-muted-light)]">
+              Pick {CITIES.map(c => c.label).join(' or ')} above to see the days {HOST_NAME} is there.
             </p>
-          )}
+          </div>
+        ) : (
+          <>
+            {/* Step 2 — pick a day */}
+            <div className="flex flex-wrap items-center gap-3 mb-2">
+              <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium">
+                2 · Pick a day
+              </p>
 
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
-
-            {/* Meeting length lives with the times it produces — the three
-                durations say what they are, so no label crowds them onto a
-                second line on a phone. */}
-            <div className="flex items-center gap-2 pb-4 mb-4 border-b border-[var(--color-border)]">
-              {DURATIONS.map(d => (
+              <div className="flex items-center gap-2 ml-auto">
                 <button
-                  key={d}
-                  onClick={() => pickDuration(d)}
-                  className={`shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full border text-sm font-medium transition-all ${
-                    duration === d
-                      ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]'
-                      : 'border-[var(--color-border)] text-[var(--color-muted-light)] hover:border-[var(--color-border-light)]'
+                  onClick={() => {
+                    if (!atToday) setRangeChoice(today)
+                    pickDay(todayKey)
+                  }}
+                  disabled={atTodayView}
+                  className={`px-3 py-1 rounded-full border text-xs font-semibold transition-all ${
+                    atTodayView
+                      ? 'border-[var(--color-border)] text-[var(--color-muted)] opacity-40 cursor-not-allowed'
+                      : 'border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 cursor-pointer'
                   }`}
                 >
-                  {d} min
+                  Today
                 </button>
-              ))}
+                <button
+                  onClick={() => {
+                    const back = addDays(rangeStart, -RANGE_DAYS)
+                    goToRange(back < today ? today : back)
+                  }}
+                  disabled={atToday}
+                  aria-label="Earlier days"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-25 disabled:cursor-not-allowed transition-all"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <span className="text-sm font-semibold min-w-[152px] text-center tabular-nums">
+                  {fmtRangeHeader(rangeStart)}
+                </span>
+                <button
+                  onClick={() => goToRange(addDays(rangeStart, RANGE_DAYS))}
+                  disabled={nextDisabled}
+                  aria-label="Later days"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-[var(--color-muted-light)] hover:text-[var(--color-foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-25 disabled:cursor-not-allowed transition-all"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
-            {rangeLoading ? (
-              <>
-                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
-                  <p className="text-sm font-semibold"><Bar className="h-3.5 w-44" /></p>
-                  <p className="text-xs text-[var(--color-muted)]"><Bar className="h-3 w-24" /></p>
-                </div>
-                <SlotGridSkeleton count={skeletonCount} />
-              </>
-            ) : !selectedDay ? (
-              <div className="py-8 text-center space-y-2">
-                <p className="text-sm text-[var(--color-muted-light)]">
-                  No {duration}-minute openings in these 7 days.
-                </p>
-                {!nextDisabled && (
+            <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+              {rangeDays.map((day) => {
+                const key = toDateKey(day)
+                const isToday = key === todayKey
+                const loading = loadingDays.has(key)
+                const count = countAvailable(rangeData.get(key))
+                const isSelected = key === selectedDay
+                const disabled = loading || count === 0
+                const elsewhere = hostCities.get(key) ?? null
+                const away = onsiteIn && !loading && elsewhere !== onsiteIn
+                  ? elsewhere
+                    ? `${HOST_NAME} is in ${cityById(elsewhere).label} this day`
+                    : `${HOST_NAME} isn’t in ${placeName} this day`
+                  : undefined
+
+                return (
                   <button
-                    onClick={() => goToRange(addDays(rangeStart, RANGE_DAYS))}
-                    className="text-sm font-semibold text-[var(--color-accent)] hover:underline"
+                    key={key}
+                    onClick={() => pickDay(key)}
+                    disabled={disabled}
+                    title={away}
+                    aria-label={away ? `${day.getDate()} — ${away}` : undefined}
+                    className={`rounded-xl border py-2.5 px-1 text-center transition-all ${
+                      isSelected
+                        ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10'
+                        : disabled
+                          ? 'border-[var(--color-border)] opacity-45 cursor-not-allowed'
+                          : 'border-[var(--color-border)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--hover-bg)] cursor-pointer'
+                    }`}
                   >
-                    Check the next 7 days →
+                    <div className={`text-[10px] uppercase tracking-widest font-medium ${
+                      isToday ? 'text-[var(--color-accent-light)]' : 'text-[var(--color-muted)]'
+                    }`}>
+                      {isToday ? 'Today' : DAY_ABBR[day.getDay()]}
+                    </div>
+                    <div className={`text-lg sm:text-xl font-bold leading-tight tabular-nums ${
+                      isSelected ? 'text-[var(--color-accent)]' : 'text-[var(--color-foreground)]'
+                    }`}>
+                      {day.getDate()}
+                    </div>
+                    <div className="mt-1 text-[10px] sm:text-[11px] leading-tight">
+                      {loading ? (
+                        <span className="inline-block w-8 h-2.5 rounded-full bg-[var(--color-border)] animate-pulse" />
+                      ) : count > 0 ? (
+                        <span className="text-emerald-500 font-semibold tabular-nums">
+                          {count}<span className="hidden sm:inline"> free</span>
+                        </span>
+                      ) : (
+                        <span className="text-[var(--color-muted)]">—</span>
+                      )}
+                    </div>
                   </button>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
-                  <p className="text-sm font-semibold">
-                    {fmtLong(daySlots[0]?.iso ?? new Date(`${selectedDay}T12:00:00${UTC_OFFSET}`).toISOString())}
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <p className="text-xs text-[var(--color-muted)]">
-                      {openSlots.length} slot{openSlots.length === 1 ? '' : 's'} available
-                    </p>
-                    <CopyLinkButton />
-                  </div>
+                )
+              })}
+            </div>
+
+            {/* Always rendered so switching meeting length never collapses this row */}
+            <p className="mt-2 px-1 text-xs text-[var(--color-muted)]">
+              {rangeLoading ? (
+                <Bar className="h-3 w-44" />
+              ) : placeName && daysThere === 0 ? (
+                `${HOST_NAME} isn’t in ${placeName} on any of these ${RANGE_DAYS} days`
+              ) : rangeTotal > 0 ? (
+                placeName
+                  ? `${rangeTotal} slot${rangeTotal === 1 ? '' : 's'} open on the days ${HOST_NAME} is in ${placeName}`
+                  : `${rangeTotal} slot${rangeTotal === 1 ? '' : 's'} open in these ${RANGE_DAYS} days`
+              ) : (
+                `No openings in these ${RANGE_DAYS} days`
+              )}
+            </p>
+
+            {/* Step 3 — pick a time */}
+            <div className="mt-6">
+              <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium mb-2">
+                3 · Pick a time
+              </p>
+
+              {bounce === 'taken' && (
+                <p className="mb-3 text-sm text-[var(--color-foreground)] bg-amber-400/15 border border-amber-400/40 rounded-xl px-4 py-3">
+                  That time was just booked by someone else. The times below are up to date — please pick another.
+                </p>
+              )}
+              {bounce === 'away' && (
+                <p className="mb-3 text-sm text-[var(--color-foreground)] bg-amber-400/15 border border-amber-400/40 rounded-xl px-4 py-3">
+                  {`${HOST_NAME}’s plans for that day just changed${placeName ? ` — no longer in ${placeName}` : ''}. The days above are up to date — please pick another.`}
+                </p>
+              )}
+
+              <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
+
+                {/* Meeting length lives with the times it produces — the three
+                    durations say what they are, so no label crowds them onto a
+                    second line on a phone. */}
+                <div className="flex items-center gap-2 pb-4 mb-4 border-b border-[var(--color-border)]">
+                  {DURATIONS.map(d => (
+                    <button
+                      key={d}
+                      onClick={() => pickDuration(d)}
+                      className={`shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full border text-sm font-medium transition-all ${
+                        duration === d
+                          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]'
+                          : 'border-[var(--color-border)] text-[var(--color-muted-light)] hover:border-[var(--color-border-light)]'
+                      }`}
+                    >
+                      {d} min
+                    </button>
+                  ))}
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                  {openSlots.map(slot => {
-                    const isSelected = selectedSlot?.iso === slot.iso
-                    return (
+                {rangeLoading ? (
+                  <>
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
+                      <p className="text-sm font-semibold"><Bar className="h-3.5 w-44" /></p>
+                      <p className="text-xs text-[var(--color-muted)]"><Bar className="h-3 w-24" /></p>
+                    </div>
+                    <SlotGridSkeleton count={skeletonCount} />
+                  </>
+                ) : !selectedDay ? (
+                  <div className="py-8 text-center space-y-2">
+                    <p className="text-sm text-[var(--color-muted-light)]">
+                      {placeName && daysThere === 0
+                        ? `${HOST_NAME} isn’t in ${placeName} on any of these ${RANGE_DAYS} days.`
+                        : `No ${duration}-minute openings in these ${RANGE_DAYS} days.`}
+                    </p>
+                    {!nextDisabled && (
                       <button
-                        key={slot.iso}
-                        onClick={() => {
-                          setSlotChoice(isSelected ? null : { iso: slot.iso, dateKey: selectedDay })
-                          setSlotTaken(false)
-                        }}
-                        className={`px-3 py-2 rounded-xl border text-center transition-all ${
-                          isSelected
-                            ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
-                            : 'border-[var(--color-border)] text-[var(--color-foreground)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10'
-                        }`}
+                        onClick={() => goToRange(addDays(rangeStart, RANGE_DAYS))}
+                        className="text-sm font-semibold text-[var(--color-accent)] hover:underline"
                       >
-                        <SlotTime
-                          start={slot.display}
-                          end={fmtSlotEnd(slot.iso, duration)}
-                          selected={isSelected}
-                        />
+                        Check the next 7 days →
                       </button>
-                    )
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
+                      <div>
+                        <p className="text-sm font-semibold">
+                          {fmtLong(daySlots[0]?.iso ?? new Date(`${selectedDay}T12:00:00${UTC_OFFSET}`).toISOString())}
+                        </p>
+                        {placeName && (
+                          <p className="text-xs text-[var(--color-muted-light)] mt-0.5">
+                            {`${HOST_NAME} is in ${placeName}${presenceLabel(presences.get(selectedDay))} this day`}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <p className="text-xs text-[var(--color-muted)]">
+                          {openSlots.length} slot{openSlots.length === 1 ? '' : 's'} available
+                        </p>
+                        <CopyLinkButton />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                      {openSlots.map(slot => {
+                        const isSelected = selectedSlot?.iso === slot.iso
+                        return (
+                          <button
+                            key={slot.iso}
+                            onClick={() => {
+                              setSlotChoice(isSelected ? null : { iso: slot.iso, dateKey: selectedDay })
+                              setBounce(null)
+                            }}
+                            className={`px-3 py-2 rounded-xl border text-center transition-all ${
+                              isSelected
+                                ? 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+                                : 'border-[var(--color-border)] text-[var(--color-foreground)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10'
+                            }`}
+                          >
+                            <SlotTime
+                              start={slot.display}
+                              end={fmtSlotEnd(slot.iso, duration)}
+                              selected={isSelected}
+                            />
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Sticky confirm bar — the choice stays reachable without scrolling */}
@@ -808,6 +974,7 @@ export function BookingFlow() {
               </p>
               <p className="text-xs text-[var(--color-muted-light)] mt-0.5 tabular-nums">
                 {fmtSlot(selectedSlot.iso)} – {fmtSlotEnd(selectedSlot.iso, duration)} {TIME_ZONE_LABEL} · {duration} min
+                {placeName && ` · in ${placeName}`}
               </p>
             </div>
             <button
@@ -822,6 +989,7 @@ export function BookingFlow() {
 
       {findOpen && (
         <FindSlots
+          onsiteIn={onsiteIn}
           initialDuration={duration}
           initialFrom={rangeStartKey}
           initialTo={keys[keys.length - 1]}
@@ -864,9 +1032,10 @@ function PickSkeleton() {
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8" aria-busy="true">
       <PageHeader />
+      <MeetingKindPicker mode={DEFAULT_MODE} city={null} />
       <div className="flex flex-wrap items-center gap-3 mb-2">
         <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium">
-          1 · Pick a day
+          2 · Pick a day
         </p>
         <div className="flex items-center gap-2 ml-auto h-8">
           <Bar className="h-4 w-40" />
@@ -884,7 +1053,7 @@ function PickSkeleton() {
       <p className="mt-2 px-1 text-xs"><Bar className="h-3 w-44" /></p>
       <div className="mt-6">
         <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium mb-2">
-          2 · Pick a time
+          3 · Pick a time
         </p>
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5">
           <div className="flex items-center gap-2 pb-4 mb-4 border-b border-[var(--color-border)]">
@@ -898,6 +1067,97 @@ function PickSkeleton() {
           <SlotGridSkeleton count={12} />
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Online or in person, and for in person, where. Drawn without handlers in the
+ * prerendered skeleton, so the page keeps its shape while it hydrates.
+ */
+function MeetingKindPicker({
+  mode,
+  city,
+  onMode,
+  onCity,
+}: {
+  mode: MeetingMode
+  city: CityId | null
+  onMode?: (mode: MeetingMode) => void
+  onCity?: (city: CityId) => void
+}) {
+  const kinds: { id: MeetingMode; title: string; sub: string; icon: React.ReactNode }[] = [
+    { id: 'online', title: 'Online', sub: ADD_GOOGLE_MEET ? 'Google Meet' : 'Video call', icon: <VideoIcon className="w-5 h-5" /> },
+    { id: 'onsite', title: 'In person', sub: CITIES.map(c => c.label).join(' or '), icon: <PinIcon className="w-5 h-5" /> },
+  ]
+
+  return (
+    <div className="mb-6">
+      <p className="text-xs uppercase tracking-widest text-[var(--color-muted)] font-medium mb-2">
+        1 · How to meet
+      </p>
+      <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="How to meet">
+        {kinds.map(k => {
+          const active = mode === k.id
+          return (
+            <button
+              key={k.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onMode?.(k.id)}
+              disabled={!onMode}
+              className={`min-w-0 flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all ${
+                active
+                  ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10'
+                  : 'border-[var(--color-border)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--hover-bg)]'
+              } disabled:cursor-default`}
+            >
+              <span className={active ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted-light)]'}>
+                {k.icon}
+              </span>
+              <span className="min-w-0">
+                <span className={`block text-sm font-semibold ${active ? 'text-[var(--color-accent)]' : 'text-[var(--color-foreground)]'}`}>
+                  {k.title}
+                </span>
+                <span className="block text-xs text-[var(--color-muted)] truncate">{k.sub}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      {mode === 'onsite' && (
+        <div className="mt-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium mr-1">Where?</span>
+            {CITIES.map(c => {
+              const active = city === c.id
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => onCity?.(c.id)}
+                  disabled={!onCity}
+                  className={`shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full border text-sm font-medium transition-all ${
+                    active
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent-light)]'
+                      : 'border-[var(--color-border)] text-[var(--color-muted-light)] hover:border-[var(--color-border-light)]'
+                  }`}
+                >
+                  {c.label}
+                </button>
+              )
+            })}
+          </div>
+          {city && (
+            <p className="mt-2 text-xs text-[var(--color-muted-light)]">
+              {`Only the days ${HOST_NAME} is in ${cityById(city).label} are open. You’ll say where to meet on the next step.`}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1025,6 +1285,15 @@ function FormField({
       </label>
       {children}
     </div>
+  )
+}
+
+function PinIcon({ className }: { className: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
+    </svg>
   )
 }
 

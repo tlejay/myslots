@@ -17,6 +17,22 @@ export interface BookingSummary {
   duration: number
   /** The Google Meet room on the invite, when Google created one. */
   meetLink?: string | null
+  /** Left out = online. */
+  mode?: 'online' | 'onsite'
+  /** In person only: the city by name, and where to meet as the visitor typed it. */
+  place?: { city: string; location: string } | null
+  /**
+   * In person only: journey legs that did not make it onto the calendar, even on
+   * a second try. Empty or left out = both are there.
+   */
+  travelMissing?: TravelLeg[]
+}
+
+export interface TravelLeg {
+  /** "There" or "Back". */
+  label: string
+  start: Date
+  end: Date
 }
 
 /** The parts of `config.ts` the wording depends on. */
@@ -65,6 +81,22 @@ function shell(heading: string, accent: string, body: string): string {
 </body></html>`
 }
 
+/** "Online · Google Meet" or "In person · Uptown". */
+function modeLabel(b: BookingSummary): string {
+  return b.mode === 'onsite' ? `In person${b.place ? ` · ${b.place.city}` : ''}` : 'Online · Google Meet'
+}
+
+/**
+ * Said only when it went wrong — the meeting stands, but the host has to block
+ * the journey by hand, so the note gives the exact times.
+ */
+function travelFailedNote(legs: TravelLeg[], ctx: EmailContext): string {
+  const times = legs
+    .map(l => `${l.label} ${fmtTime(l.start, ctx.timeZone)}–${fmtTime(l.end, ctx.timeZone)}`)
+    .join(' · ')
+  return `The travel events could not be added (tried twice) — block the time in your calendar yourself: ${times}`
+}
+
 function detailRows(b: BookingSummary, ctx: EmailContext): string {
   const when =
     `${fmtDate(b.start, ctx.timeZone)} · ` +
@@ -75,6 +107,11 @@ function detailRows(b: BookingSummary, ctx: EmailContext): string {
     row('Email', `<a href="mailto:${esc(b.email)}" style="color:#2563eb;text-decoration:none">${esc(b.email)}</a>`),
     row('When', esc(when)),
     row('Length', `${b.duration} minutes`),
+    row('How', esc(modeLabel(b))),
+    b.mode === 'onsite' && b.place ? row('Where', esc(b.place.location)) : '',
+    b.mode === 'onsite' && b.travelMissing?.length
+      ? row('Travel', `<span style="color:#dc2626">${esc(travelFailedNote(b.travelMissing, ctx))}</span>`)
+      : '',
     b.meetLink
       ? row('Google Meet', `<a href="${esc(b.meetLink)}" style="color:#2563eb;text-decoration:none">${esc(b.meetLink.replace(/^https?:\/\//, ''))}</a>`)
       : '',
@@ -95,7 +132,7 @@ export function renderBookingCreated(
   eventLink?: string | null,
 ): RenderedEmail {
   return {
-    subject: subjectFor('📅 New booking', b, ctx),
+    subject: subjectFor(b.mode === 'onsite' ? '📍 New in-person booking' : '📅 New booking', b, ctx),
     html: shell(
       `${b.name} booked time with you`,
       '#2563eb',

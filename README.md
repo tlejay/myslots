@@ -19,7 +19,7 @@ and an invite in every inbox. No SaaS, no seats, no account for them to create.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Ftlejay%2Fmyslots&project-name=myslots&repository-name=myslots)
 
-[Features](#-what-you-get) · [Quick start](#quick-start) · [Connect Google Calendar](#connect-your-google-calendar) · [How it works](#how-it-works) · [Deploy](#deploy)
+[Features](#-what-you-get) · [Meet in person](#meet-in-person) · [Quick start](#quick-start) · [Connect Google Calendar](#connect-your-google-calendar) · [How it works](#how-it-works) · [Deploy](#deploy)
 
 </div>
 
@@ -29,8 +29,9 @@ and an invite in every inbox. No SaaS, no seats, no account for them to create.
 
 | Feature | What it does |
 |---|---|
-| 📅 **Real availability** | Reads your Google Calendar's free/busy. Titles and attendees never leave your calendar |
-| 🎥 **A Meet room on every booking** | Created with the event, shown on the confirmation screen and in every invite |
+| 📅 **Real availability** | Reads your Google Calendar. Only *when* you are busy leaves the server — never titles or attendees |
+| 🎥 **A Meet room on every online booking** | Created with the event, shown on the confirmation screen and in every invite |
+| 📍 **Online or in person** | Visitors pick a city, see only the days you are there, and say where to meet. You say where you are with an `@ City` event on your own calendar |
 | 🛡️ **No double booking, no back-to-back** | The calendar is re-checked the instant someone confirms, and a buffer keeps time clear around every event for travel or prep — after a 09:00–10:00 meeting the first slot is 10:30 |
 | 📋 **Copy your week as text** | **Find slots** turns a date range into a paste-ready message for LINE, Slack or email |
 | 📬 **The email Google won't send you** | Google never tells the calendar owner about their own events, so MySlots mails you through Gmail |
@@ -182,6 +183,57 @@ date range goes back to the calendar.
 
 ---
 
+## Meet in person
+
+The first choice on the page is **how to meet**: online (a Google Meet room, as
+before) or **in person**. In person, the visitor picks a city from the list in
+`config.ts`, sees only the days and hours you are there, and must say where to
+meet — a café, an office address, a map link. That goes on the invite as the
+event's location, and there is no Meet room.
+
+**Telling it where you are.** There is no admin page and no database — you put
+an event on your own calendar whose title starts with `@ `:
+
+| Event on your calendar | What visitors see |
+|---|---|
+| *(nothing)* | You are in `DEFAULT_LOCATION` (Downtown in the sample config) |
+| `@ Uptown`, all day | Uptown is open that day, Downtown is shut |
+| `@ Uptown`, 13:00–24:00 | Downtown in the morning, Uptown from 13:00 |
+| `@ Lisbon`, all day | Somewhere not in the list — in person is shut everywhere that day |
+| `@ Downtown` 10:00–12:00 inside an all-day `@ Uptown` | A trip there and back: the later event wins for its stretch |
+
+- Titles match a city's `id`, `label` or any of its `aliases`, ignoring case and
+  extra spaces (`@ uptown`, `@  North side`). Multi-day all-day events work.
+- These events are **never counted as busy**, whether you leave them as *Busy*
+  or set them to *Free* — they say where you are, not what you are doing. Online
+  booking is not affected by them at all.
+- Set `DEFAULT_LOCATION = null` if you would rather nothing be bookable in
+  person unless an `@ City` event says so.
+
+**The journey.** An in-person meeting keeps 45 minutes clear on each side
+(`ONSITE_BUFFER_BEFORE_MINUTES` / `…_AFTER_…`), and the whole stretch — journey
+included — must fall inside your time in that city. With `@ Uptown` from 10:00,
+the earliest in-person start is 10:45 (11:00 on the 30-minute grid). Buffers do
+not stack: the gap between two things is the larger of the two buffers, so after
+an in-person 14:00–15:00 the next meeting of either kind may start at 15:45.
+
+When someone books in person, two `🚗 Travel` events go on your calendar either
+side of the meeting (busy, private, no invitations), so other people's
+schedulers see the journey too. MySlots itself ignores them — the meeting's own
+buffer already stands for them. Each has a fixed id, so a retry after a lost
+answer never makes a second copy; if one still fails, the notification email
+says so with the times to block by hand.
+
+Links carry the choice too — `?mode=onsite&city=uptown&date=…` opens straight
+on Uptown — and **Find slots** follows whichever mode is selected. In demo mode
+the synthetic calendar has an Uptown day, an Uptown afternoon and a day out of
+town in every week, so the whole flow can be tried without credentials.
+
+`pnpm check:booking` runs the rules — buffers, location events, request parsing,
+travel retries — against the real modules, no server or calendar needed.
+
+---
+
 ## Quick start
 
 ```bash
@@ -209,6 +261,11 @@ export const DAILY_BREAK = { start: 12, end: 13 } // lunch; null keeps the day w
 export const ADD_GOOGLE_MEET = true     // a Meet room on every invite
 export const BUFFER_BEFORE_MINUTES = 30 // kept clear before a booked meeting
 export const BUFFER_AFTER_MINUTES = 30  // …and after it; 0 allows back-to-back
+export const CITIES = [                 // where people can meet you in person
+  { id: 'downtown', label: 'Downtown', aliases: ['city centre'] },
+  { id: 'uptown', label: 'Uptown', aliases: ['north side'] },
+]
+export const DEFAULT_LOCATION = 'downtown' // where you are without an "@ City" event
 ```
 
 ---
@@ -233,7 +290,7 @@ minutes, once.
    verification — while the app is in *Testing*, add your own Google account
    under **Test users** and it will work indefinitely for you.
 4. Add two scopes:
-   - `https://www.googleapis.com/auth/calendar` — read free/busy, write events
+   - `https://www.googleapis.com/auth/calendar` — read events, write bookings
    - `https://www.googleapis.com/auth/gmail.send` — mail you when someone books
 
 > `gmail.send` is only used to send you the notification above. Skip it and
@@ -290,7 +347,7 @@ Use the Google account's own address for its main calendar, or copy a secondary
 calendar's ID from **Google Calendar → Settings → *calendar name* → Integrate
 calendar → Calendar ID**. Leave it unset and the app falls back to `primary`.
 
-Restart `pnpm dev`. The banner-free page now reads your real free/busy.
+Restart `pnpm dev`. The banner-free page now reads your real calendar.
 
 ---
 
@@ -303,7 +360,8 @@ server would refuse.
 ### `GET /api/availability?date=YYYY-MM-DD&duration=60`
 
 Generates every candidate slot for that date from the configured working hours,
-asks the Calendar **free/busy** API what is taken, and labels each slot.
+reads the day's events to see what is taken, and labels each slot. Add
+`&mode=onsite&city=uptown` for in person.
 
 ```jsonc
 {
@@ -316,14 +374,26 @@ asks the Calendar **free/busy** API what is taken, and labels each slot.
 }
 ```
 
-Free/busy only returns *when* you are busy, never event titles or attendees — so
-this endpoint cannot leak the contents of your calendar even though it is public.
+Only *when* you are busy goes out, never event titles or attendees — so this
+endpoint cannot leak the contents of your calendar even though it is public.
+Events are read rather than free/busy because free/busy cannot tell an
+in-person booking from any other block, or leave out `@ City` and travel events.
+
+In person, the response adds when you are in that city that day (`presence`,
+local times) and, on a day you are not, which listed city you are in instead
+(`hostCity`, `null` for anywhere else). Hours outside `presence` are treated as
+busy, with the meeting's 45-minute journey kept clear of them.
+
+```jsonc
+{ "slots": [/* … */], "hostCity": "uptown", "presence": [{ "start": "13:00", "end": "24:00" }], "demo": false }
+```
 
 **Buffers.** Before any slot is checked, every busy block is grown by the buffers
 in `config.ts`: its end moves later by `BUFFER_BEFORE_MINUTES`, its start earlier
 by `BUFFER_AFTER_MINUTES`. With both at 30, a 09:00–10:00 event counts as busy
 from 08:30 to 10:30, so the first slot after it is 10:30 — and a meeting may end
-no later than 30 minutes before the next event. The widening happens once, in
+no later than 30 minutes before the next event. In-person meetings use 45 on
+each side, and two buffers never add up — see [Meet in person](#meet-in-person). The widening happens once, in
 `busyBetween` (`src/lib/google-calendar.ts`), so all three endpoints — and demo
 mode — agree. It applies to every event on the calendar, not only bookings made
 here, the same way Calendly's buffers do. Buffers may spill past working hours,
@@ -346,10 +416,11 @@ so paging back is instant.
 
 ### `GET /api/availability/windows?from=YYYY-MM-DD&to=YYYY-MM-DD`
 
-One free/busy query for the whole range, answered as free stretches per day —
+One calendar read for the whole range, answered as free stretches per day —
 what **Find slots** turns into text. Edges are snapped inward onto the slot grid
 and anything already past is cut off. The range is clamped to today …
-`MAX_DAYS_AHEAD`.
+`MAX_DAYS_AHEAD`. Takes the same `mode` / `city` as above; in person, a day you
+are not in that city comes back with no windows.
 
 ```jsonc
 {
@@ -363,14 +434,17 @@ and anything already past is cut off. The range is clamped to today …
 ### `POST /api/book`
 
 ```jsonc
-// request — `topic` and `guests` are optional
+// request — `topic` and `guests` are optional; `mode` defaults to "online"
 {
   "startTime": "2026-09-01T02:00:00.000Z",
   "duration": 60,
   "name": "John",
   "email": "john@example.com",
   "topic": "Intro call",
-  "guests": ["sam@example.com", "dana@example.com"]
+  "guests": ["sam@example.com", "dana@example.com"],
+  "mode": "onsite",        // in person: `city` and `place` are then required
+  "city": "uptown",
+  "place": "Corner café, 2nd floor"
 }
 
 // 200 — meetLink is null in demo mode, or if Google declined to create a room
@@ -378,20 +452,26 @@ and anything already past is cut off. The range is clamped to today …
 ```
 
 Because the endpoint is public it re-validates every request server-side before
-writing: the email must be well formed, the duration must be one you offer, the
+writing. Every field is type-checked — `null`, a number for a name or a list for
+a place is a **400** with a reason, never a crash. The email must be well formed, the duration must be one you offer, the
 time must be in the future, on the slot grid, inside working hours and within
 `MAX_DAYS_AHEAD`, every guest address must
-parse, there may be at most `MAX_GUESTS` (10) of them, and a second free/busy
+parse, there may be at most `MAX_GUESTS` (10) of them, and a second calendar
 check must still show the slot open, buffers included. A slot taken between page load and submit
-returns **409** rather than double-booking you.
+returns **409** (`"reason": "taken"`) rather than double-booking you. In person,
+you must also still be in that city for the meeting and the journey either side;
+if an `@ City` event moved in the meantime it is a **409** with `"reason": "away"`,
+and the page sends the visitor back to pick again.
 
 Guests are lowercased and de-duplicated, and the booker's own address and the
 host calendar are dropped from the list so nobody is invited twice.
 
-On success it inserts the event with `sendUpdates: 'all'` and, when
-`ADD_GOOGLE_MEET` is on, a Meet conference request — so Google emails the invite,
-room included, to the booker and every guest — then sends the host the notification
-Google leaves out.
+On success it inserts the event with `sendUpdates: 'all'` and, for an online
+meeting with `ADD_GOOGLE_MEET` on, a Meet conference request — so Google emails
+the invite, room included, to the booker and every guest. In person it sets the
+event's location instead and adds the two travel events. Then it sends the host
+the notification Google leaves out, which says how, where and — if a travel event
+could not be added — what to block by hand.
 
 ---
 
@@ -456,27 +536,32 @@ src/
     page.tsx                      renders the booking flow at /
     globals.css                   design tokens, light + dark
     theme-toggle.tsx
-    book/BookingFlow.tsx          the whole three-step flow
+    book/BookingFlow.tsx          the whole flow: how to meet → day → time → details
     book/FindSlots.tsx            free time as copyable text
-    api/availability/route.ts     free/busy → labelled slots
-    api/availability/windows/     free/busy → free stretches per day
+    api/availability/route.ts     busy time → labelled slots
+    api/availability/windows/     busy time → free stretches per day
     api/book/route.ts             validate → re-check → insert event
   lib/
     config.ts                     everything you are likely to change
     booking-time.ts               working hours, slot grid, buffers, free windows
+    host-location.ts              "@ City" events → where you are, hour by hour
+    calendar-events.ts            which events are busy, which say where you are
+    booking-request.ts            POST /api/book body, checked field by field
+    booking-travel.ts             travel event ids and the retry
     availability-text.ts          the Find slots message
-    google-calendar.ts            OAuth client, demo-mode detection, buffered free/busy
-    demo-availability.ts          synthetic busy blocks, no credentials needed
+    google-calendar.ts            OAuth client, demo-mode detection, buffered busy time
+    demo-availability.ts          synthetic busy blocks and cities, no credentials needed
     booking-email.ts              sends the host notification through Gmail
     booking-email-template.ts     the markup of that email, on its own
 scripts/
   get-refresh-token.mjs           pnpm token
   render-email-mockup.mjs         pnpm mockup — the README's email pictures
+  check-booking.mjs               pnpm check:booking — the booking rules, no server
 ```
 
 ## Contributing
 
-Issues and pull requests are welcome. Run `pnpm lint` and `pnpm build` before you
+Issues and pull requests are welcome. Run `pnpm lint`, `pnpm check:booking` and `pnpm build` before you
 open one, and keep the app runnable in demo mode — that is how reviewers try it.
 
 ## License

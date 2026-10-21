@@ -53,12 +53,15 @@ export function availabilityText({
   includeWeekends,
   hostName,
   bookingLink,
+  inPersonIn = null,
 }: {
   days: DayWindows[]
   duration: number
   includeWeekends: boolean
   hostName: string
   bookingLink: string
+  /** For meeting in person: the city name, which the opening line then says. */
+  inPersonIn?: string | null
 }): string {
   const blocks = days
     .filter(day => includeWeekends || !isWeekendDate(day.date))
@@ -69,7 +72,9 @@ export function availabilityText({
     })
 
   return [
-    `Here’s ${hostName}’s availability during this period 😊`,
+    inPersonIn
+      ? `Here’s ${hostName}’s availability to meet in person in ${inPersonIn} during this period 😊`
+      : `Here’s ${hostName}’s availability during this period 😊`,
     '',
     blocks.join('\n\n'),
     '—',

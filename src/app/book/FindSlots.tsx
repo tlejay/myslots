@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
-import { DURATIONS, HOST_NAME } from '@/lib/config'
+import { DURATIONS, HOST_NAME, cityById, type CityId } from '@/lib/config'
 import { availabilityText, isWeekendDate, type DayWindows } from '@/lib/availability-text'
 
 // A panel that writes a plain-text summary of free time over a stretch of days,
@@ -17,6 +17,7 @@ interface Result {
 }
 
 export function FindSlots({
+  onsiteIn,
   initialDuration,
   initialFrom,
   initialTo,
@@ -24,6 +25,8 @@ export function FindSlots({
   maxDate,
   onClose,
 }: {
+  /** In person in this city, or null for online — follows the booking page. */
+  onsiteIn: CityId | null
   initialDuration: number
   initialFrom: string
   initialTo: string
@@ -42,14 +45,16 @@ export function FindSlots({
   const panelRef = useRef<HTMLDivElement>(null)
   const textRef = useRef<HTMLPreElement>(null)
 
-  const rangeKey = `${from}|${to}`
+  const placeName = onsiteIn ? cityById(onsiteIn).label : null
+  const kind = onsiteIn ? `&mode=onsite&city=${onsiteIn}` : ''
+  const rangeKey = `${from}|${to}|${onsiteIn ?? 'online'}`
   const loading = !result || result.key !== rangeKey
 
   // Windows come back unfiltered, so only a new range needs the network —
   // length and weekends are applied to what is already here.
   useEffect(() => {
     const controller = new AbortController()
-    fetch(`/api/availability/windows?from=${from}&to=${to}`, { signal: controller.signal })
+    fetch(`/api/availability/windows?from=${from}&to=${to}${kind}`, { signal: controller.signal })
       .then(async res => {
         const data = await res.json()
         if (!res.ok) throw new Error(data.error ?? 'Calendar unavailable')
@@ -60,7 +65,7 @@ export function FindSlots({
         setResult({ key: rangeKey, days: null, error: err instanceof Error ? err.message : 'Calendar unavailable' })
       })
     return () => controller.abort()
-  }, [from, to, rangeKey])
+  }, [from, to, kind, rangeKey])
 
   // Esc closes, the page behind stops scrolling, and focus starts in the panel.
   // Read through an effect event so a new `onClose` from the parent does not
@@ -91,7 +96,7 @@ export function FindSlots({
 
   const text =
     !loading && result?.days && duration && shownDays.length > 0
-      ? availabilityText({ days: result.days, duration, includeWeekends, hostName: HOST_NAME, bookingLink })
+      ? availabilityText({ days: result.days, duration, includeWeekends, hostName: HOST_NAME, bookingLink, inPersonIn: placeName })
       : null
 
   const copy = async () => {
@@ -148,6 +153,9 @@ export function FindSlots({
             <h2 id="find-slots-title" className="text-lg font-bold">Find slots</h2>
             <p className="text-xs text-[var(--color-muted-light)] mt-0.5">
               Copy {HOST_NAME}&apos;s free time as text, ready to paste into a chat.
+            </p>
+            <p className="text-xs text-[var(--color-muted)] mt-0.5">
+              {placeName ? `In person in ${placeName} — only the days ${HOST_NAME} is there` : 'Online meetings'}
             </p>
           </div>
           <button
