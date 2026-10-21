@@ -9,7 +9,8 @@ A single-person booking page: Next.js App Router, Tailwind v4, Google Calendar A
 - `src/lib/google-calendar.ts` — OAuth client. `isCalendarConfigured` is false
   when credentials are absent, which puts the app in demo mode.
 - `src/lib/demo-availability.ts` — deterministic synthetic busy blocks and
-  location events (an Uptown day, an Uptown afternoon, a day out of town each week).
+  location events (an Uptown day, an Uptown afternoon, and an Uptown day with a
+  10:00–12:00 stop back in Downtown each week).
 - `src/lib/host-location.ts` — "@ City" events → where the host is, minute by
   minute; `onsiteFits` / `absenceBlocks` decide what in person may book.
 - `src/lib/calendar-events.ts` — which events are busy (and of what kind), which
