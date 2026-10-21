@@ -28,16 +28,25 @@ const MODULES = [
   'booking-travel',
   'demo-availability',
 ]
-const out = mkdtempSync(join(tmpdir(), 'check-booking-'))
-process.on('exit', () => rmSync(out, { recursive: true, force: true }))
-for (const name of MODULES) {
-  const source = readFileSync(new URL(`../src/lib/${name}.ts`, import.meta.url), 'utf8')
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-  })
-  writeFileSync(join(out, `${name}.mjs`), outputText.replace(/from '\.\/([\w-]+)'/g, "from './$1.mjs'"))
+/**
+ * Compiles the modules into their own scratch folder and returns a loader for
+ * them. `editConfig` rewrites config.ts first — how the checks try settings
+ * other than the shipped ones.
+ */
+function build(editConfig = source => source) {
+  const out = mkdtempSync(join(tmpdir(), 'check-booking-'))
+  process.on('exit', () => rmSync(out, { recursive: true, force: true }))
+  for (const name of MODULES) {
+    let source = readFileSync(new URL(`../src/lib/${name}.ts`, import.meta.url), 'utf8')
+    if (name === 'config') source = editConfig(source)
+    const { outputText } = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    })
+    writeFileSync(join(out, `${name}.mjs`), outputText.replace(/from '\.\/([\w-]+)'/g, "from './$1.mjs'"))
+  }
+  return name => import(pathToFileURL(join(out, `${name}.mjs`)).href)
 }
-const load = name => import(pathToFileURL(join(out, `${name}.mjs`)).href)
+const load = build()
 
 const config = await load('config')
 const time = await load('booking-time')
@@ -165,18 +174,26 @@ await check('in person keeps weekend hours: first 10:00', () => {
 })
 
 console.log('Location events — what counts as one')
-await check('"@ Uptown", any case or spacing, its alias, or "@Uptown" → uptown', () => {
-  for (const title of ['@ Uptown', '@ uptown ', '  @   UPTOWN', '@ North Side', '@ north-side', '@Uptown']) {
+await check('"@ Uptown", any case or spaces around the name, or an alias → uptown', () => {
+  for (const title of ['@ Uptown', '@ uptown ', '@   UPTOWN', '@ North Side', '@ north-side']) {
     assert.equal(where.cityFromTitle(title), 'uptown', title)
   }
   assert.equal(where.cityFromTitle('@ City Centre'), 'downtown')
+  assert.equal(where.cityFromTitle('@ Downtown'), 'downtown')
 })
-await check('"@ Lisbon" is a location event for somewhere nobody can book → null', () => {
-  assert.equal(where.cityFromTitle('@ Lisbon'), null)
-  assert.ok(where.isLocationTitle('@ Lisbon'))
+await check('the prefix is matched exactly — "@Uptown" and " @ Uptown" are ordinary events', () => {
+  for (const title of ['@Uptown', ' @ Uptown', '  @   UPTOWN']) {
+    assert.equal(where.cityFromTitle(title), undefined, title)
+  }
+})
+await check('a title that is more than a city name is an ordinary event', () => {
+  for (const title of ['@Alice sync', '@ Acme call', '@ Uptown (lunch)', '@ Uptown lunch', '@ Lisbon']) {
+    assert.equal(where.cityFromTitle(title), undefined, title)
+    assert.ok(!where.isLocationTitle(title), title)
+  }
 })
 await check('anything else is not a location event', () => {
-  for (const title of ['Uptown', 'Lunch @ Uptown', '@', '@   ', '', null, undefined]) {
+  for (const title of ['Uptown', 'Lunch @ Uptown', '@', '@ ', '@   ', '', null, undefined]) {
     assert.equal(where.cityFromTitle(title), undefined, String(title))
   }
 })
@@ -233,18 +250,12 @@ await check('neighbouring stretches of one city join up', () => {
   assert.deepEqual(where.presenceIn(day.stretches, 'uptown'), [{ start: 600, end: 1320 }])
   assert.ok(where.onsiteFits(day.stretches, 'uptown', mins('13:30'), mins('14:30')))
 })
-await check('"@ Lisbon" all day closes in person everywhere', () => {
-  const ev = [allDay('@ Lisbon', FRI)]
-  assert.deepEqual(openOnsite(FRI, 60, ev, 'downtown'), [])
-  assert.deepEqual(openOnsite(FRI, 60, ev, 'uptown'), [])
-  assert.equal(where.mainCity(FRI, where.hostDays(FRI, FRI, ev)[0].stretches), null)
+await check('"@ Acme call" is not a location event, so it leaves where the host is alone', () => {
+  const ev = [allDay('@ Acme call', FRI)]
+  assert.deepEqual(spans(where.hostDays(FRI, FRI, ev)[0]), ['00:00-24:00 downtown'])
 })
 await check('a day shut for uptown names where the host is instead', () => {
   assert.equal(where.mainCity(MON, where.hostDays(MON, MON, [])[0].stretches), 'downtown')
-})
-await check('"@ Lisbon" 09:00–12:00: downtown opens again at 12:45 — the 30-minute grid offers 13:00', () => {
-  const slots = openOnsite(MON, 60, [loc('@ Lisbon', MON, '09:00', '12:00')], 'downtown')
-  assert.equal(slots[0], '13:00')
 })
 await check('DEFAULT_LOCATION null: only what a location event covers is open', () => {
   assert.deepEqual(openOnsite(MON, 60, [], 'downtown', [], null), [])
@@ -270,7 +281,17 @@ await check('an in-person booking made here is busy, of kind onsite', () => {
 })
 await check('a location event is never busy — marked free or busy', () => {
   assert.deepEqual(events.busyBlocks([ev({ summary: '@ Uptown' }), ev({ summary: '@ Uptown', transparency: 'opaque' })]), [])
-  assert.deepEqual(events.busyBlocks([ev({ summary: '@ Lisbon', transparency: 'transparent' })]), [])
+  assert.deepEqual(events.busyBlocks([ev({ summary: '@ Downtown' })]), [])
+})
+await check('a meeting whose title starts with "@" is busy, and says nothing about where the host is', () => {
+  const meetings = ['@Alice sync', '@ Acme call', '@ Uptown (lunch)', '@ Lisbon'].map(summary => ev({ summary }))
+  assert.equal(events.busyBlocks(meetings).length, 4)
+  assert.deepEqual(events.locationEvents(meetings), [])
+})
+await check('…so it blocks the slot it sits on, online and in person', () => {
+  const [b] = events.busyBlocks([ev({ summary: '@ Uptown (lunch)' })])
+  assert.ok(!open(MON, 60, [b], 'online').includes('10:00'))
+  assert.ok(!open(MON, 60, [b], 'onsite').includes('10:00'))
 })
 await check('travel events, free, cancelled and declined ones are not busy', () => {
   assert.deepEqual(events.busyBlocks([
@@ -295,7 +316,7 @@ await check('location events are read whatever they are marked; cancelled ones a
 
 console.log('Demo mode')
 const dateKeyOf = d => time.localParts(d).dateKey
-await check('any seven days in a row hold an uptown day, an uptown afternoon and a day out of town', () => {
+await check('any seven days in a row hold an uptown day, an uptown afternoon and a trip back downtown', () => {
   for (let i = 0; i < 7; i++) {
     const from = time.addDaysToKey(MON, i)
     const to = time.addDaysToKey(from, 6)
@@ -303,8 +324,8 @@ await check('any seven days in a row hold an uptown day, an uptown afternoon and
     const days = where.hostDays(from, to, located)
     const whole = days.filter(d => spans(d).join() === '00:00-24:00 uptown').length
     const half = days.filter(d => spans(d).join() === '00:00-13:00 downtown,13:00-24:00 uptown').length
-    const away = days.filter(d => spans(d).join() === '00:00-24:00 null').length
-    assert.deepEqual([whole, half, away], [1, 1, 1], `${from}…${to}`)
+    const trip = days.filter(d => spans(d).join() === '00:00-10:00 uptown,10:00-12:00 downtown,12:00-24:00 uptown').length
+    assert.deepEqual([whole, half, trip], [1, 1, 1], `${from}…${to}`)
   }
 })
 await check('the afternoon day offers uptown from 14:00, after the journey from 13:00', () => {
@@ -474,6 +495,59 @@ await check('only a 409 counts as "already there" — other failures do not', ()
   for (const err of [{ status: 503 }, { status: 400 }, new Error('409'), null, '409', 409]) {
     assert.ok(!travel.isAlreadyCreated(err), JSON.stringify(err))
   }
+})
+
+console.log('Other settings — DEFAULT_LOCATION = null, LOCATION_EVENT_PREFIX = "Where: "')
+/** config.ts with `from` swapped for `to` — loudly, if `from` is no longer there. */
+const swap = (source, from, to) => {
+  assert.ok(source.includes(from), `config.ts no longer has: ${from}`)
+  return source.replace(from, to)
+}
+const loadOther = build(source =>
+  swap(
+    swap(source, "export const DEFAULT_LOCATION: CityId | null = 'downtown'", 'export const DEFAULT_LOCATION: CityId | null = null'),
+    "export const LOCATION_EVENT_PREFIX = '@ '",
+    "export const LOCATION_EVENT_PREFIX = 'Where: '",
+  ),
+)
+const other = {
+  config: await loadOther('config'),
+  where: await loadOther('host-location'),
+  events: await loadOther('calendar-events'),
+  demo: await loadOther('demo-availability'),
+}
+await check('the settings took', () => {
+  assert.equal(other.config.DEFAULT_LOCATION, null)
+  assert.equal(other.config.LOCATION_EVENT_PREFIX, 'Where: ')
+})
+await check('"Where: Uptown" is a location event; "@ Uptown" is now an ordinary one', () => {
+  assert.equal(other.where.cityFromTitle('Where: Uptown'), 'uptown')
+  assert.equal(other.where.cityFromTitle('Where:  north side '), 'uptown')
+  for (const title of ['@ Uptown', 'Where:Uptown', 'where: Uptown', 'Where: Acme call', 'Where: Uptown (lunch)']) {
+    assert.equal(other.where.cityFromTitle(title), undefined, title)
+  }
+  assert.deepEqual(other.events.busyBlocks([ev({ summary: 'Where: Uptown' })]), [])
+  assert.equal(other.events.busyBlocks([ev({ summary: '@ Uptown' })]).length, 1)
+})
+await check('with no location event the host is nowhere known, and nothing is open in person', () => {
+  const [day] = other.where.hostDays(MON, MON, [])
+  assert.deepEqual(spans(day), ['00:00-24:00 null'])
+  assert.equal(other.where.mainCity(MON, day.stretches), null)
+  assert.deepEqual(other.where.presenceIn(day.stretches, 'downtown'), [])
+})
+await check('"Where: Downtown" 13:00–24:00 opens downtown from 13:45 — the grid offers 14:00', () => {
+  const [day] = other.where.hostDays(MON, MON, [loc('Where: Downtown', MON, '13:00', '24:00')])
+  assert.deepEqual(spans(day), ['00:00-13:00 null', '13:00-24:00 downtown'])
+  assert.ok(other.where.onsiteFits(day.stretches, 'downtown', mins('13:45'), mins('14:45')))
+  assert.ok(!other.where.onsiteFits(day.stretches, 'downtown', mins('13:30'), mins('14:30')))
+  assert.equal(other.where.mainCity(MON, day.stretches), 'downtown')
+})
+await check('the demo writes its location events with the configured prefix', () => {
+  const week = time.dateKeysBetween(MON, time.addDaysToKey(MON, 6))
+  const located = other.demo.demoLocationsBetween(at(MON, '00:00'), at(time.addDaysToKey(MON, 7), '00:00'), dateKeyOf, '+07:00')
+  assert.ok(located.length > 0 && located.every(e => e.title.startsWith('Where: ')))
+  const days = other.where.hostDays(week[0], week.at(-1), located)
+  assert.equal(days.filter(d => spans(d).join() === '00:00-24:00 null').length, 4)
 })
 
 console.log(`\n${passed} checks passed`)

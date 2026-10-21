@@ -199,16 +199,26 @@ an event on your own calendar whose title starts with `@ `:
 | *(nothing)* | You are in `DEFAULT_LOCATION` (Downtown in the sample config) |
 | `@ Uptown`, all day | Uptown is open that day, Downtown is shut |
 | `@ Uptown`, 13:00–24:00 | Downtown in the morning, Uptown from 13:00 |
-| `@ Lisbon`, all day | Somewhere not in the list — in person is shut everywhere that day |
 | `@ Downtown` 10:00–12:00 inside an all-day `@ Uptown` | A trip there and back: the later event wins for its stretch |
 
-- Titles match a city's `id`, `label` or any of its `aliases`, ignoring case and
-  extra spaces (`@ uptown`, `@  North side`). Multi-day all-day events work.
-- These events are **never counted as busy**, whether you leave them as *Busy*
+- **The title must be `@ ` and a city's name — nothing more.** The name is a
+  city's `id`, `label` or one of its `aliases`, in any case and with any spaces
+  around it (`@ uptown`, `@   North side `). Multi-day all-day events work.
+- Those events are **never counted as busy**, whether you leave them as *Busy*
   or set them to *Free* — they say where you are, not what you are doing. Online
   booking is not affected by them at all.
+- **Every other title is an ordinary event** and blocks its time like any
+  meeting, even when it starts with `@`: `@Alice sync`, `@ Acme call`,
+  `@ Uptown (lunch)`, `@Uptown` (no space) and `@ Lisbon` (not in your list) are
+  all busy, and none of them moves you. A real meeting can never be opened up
+  by a title that happens to look like a location.
+- Somewhere not in `CITIES` can't be said with an `@` event. To shut in person
+  for a day you are away, put an ordinary busy event on it — that shuts online
+  too.
 - Set `DEFAULT_LOCATION = null` if you would rather nothing be bookable in
   person unless an `@ City` event says so.
+- `@ ` is `LOCATION_EVENT_PREFIX` in `config.ts`. Change it (say, to `Where: `)
+  and only that exact prefix counts — `@` titles then become ordinary events.
 
 **The journey.** An in-person meeting keeps 45 minutes clear on each side
 (`ONSITE_BUFFER_BEFORE_MINUTES` / `…_AFTER_…`), and the whole stretch — journey
@@ -266,6 +276,7 @@ export const CITIES = [                 // where people can meet you in person
   { id: 'uptown', label: 'Uptown', aliases: ['north side'] },
 ]
 export const DEFAULT_LOCATION = 'downtown' // where you are without an "@ City" event
+export const LOCATION_EVENT_PREFIX = '@ '  // how a location event's title starts
 ```
 
 ---

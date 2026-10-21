@@ -25,8 +25,7 @@ export interface LocationEvent {
 
 /**
  * Where the host is for one stretch of a day: a city from CITIES, or `null` for
- * anywhere in-person meetings cannot be booked — a city not in the list, or
- * nowhere known while DEFAULT_LOCATION is null.
+ * nowhere known — no location event covers it and DEFAULT_LOCATION is null.
  */
 export interface HostStretch {
   start: number
@@ -48,17 +47,18 @@ export interface Span {
 const normalise = (name: string) => name.trim().toLowerCase().replace(/[\s-]+/g, ' ')
 
 /**
- * The city a location event's title names, `null` when it names somewhere not
- * in CITIES, or `undefined` when the title is not a location event at all.
+ * The city a location event's title names, or `undefined` when the title is not
+ * a location event. One is the prefix exactly as configured, then a city's id,
+ * label or alias and nothing else — case and spaces around the name aside. Any
+ * other title is an ordinary event and takes up time: "@ Acme call",
+ * "@Alice sync" and "@ Uptown (lunch)" must never open the calendar under a
+ * real meeting.
  */
-export function cityFromTitle(title: string | null | undefined): CityId | null | undefined {
-  const prefix = LOCATION_EVENT_PREFIX.trim()
-  const text = (title ?? '').trim()
-  if (!prefix || !text.startsWith(prefix)) return undefined
-  const name = normalise(text.slice(prefix.length))
-  if (!name) return undefined
-  const city = CITIES.find(c => [c.id, c.label, ...c.aliases].some(n => normalise(n) === name))
-  return city ? city.id : null
+export function cityFromTitle(title: string | null | undefined): CityId | undefined {
+  const text = title ?? ''
+  if (!LOCATION_EVENT_PREFIX || !text.startsWith(LOCATION_EVENT_PREFIX)) return undefined
+  const name = normalise(text.slice(LOCATION_EVENT_PREFIX.length))
+  return CITIES.find(c => [c.id, c.label, ...c.aliases].some(n => normalise(n) === name))?.id
 }
 
 export function isLocationTitle(title: string | null | undefined): boolean {
@@ -107,7 +107,7 @@ export function hostDays(
 ): HostDay[] {
   const located = events
     .map(e => ({ ...e, city: cityFromTitle(e.title) }))
-    .filter((e): e is LocationEvent & { city: CityId | null } => e.city !== undefined && e.end > e.start)
+    .filter((e): e is LocationEvent & { city: CityId } => e.city !== undefined && e.end > e.start)
     .sort((a, b) =>
       a.start.getTime() - b.start.getTime() || (b.end.getTime() - b.start.getTime()) - (a.end.getTime() - a.start.getTime()),
     )
@@ -149,7 +149,7 @@ export function onsiteFits(stretches: HostStretch[], city: CityId, start: number
 /**
  * Where the host spends most of the day's working hours — the place to name
  * when a day is shut for in-person meetings in the city the visitor picked.
- * `null` = somewhere that cannot be booked.
+ * `null` = nowhere known (DEFAULT_LOCATION null and no location event).
  */
 export function mainCity(dateKey: string, stretches: HostStretch[]): CityId | null {
   const minutes = new Map<CityId | null, number>()

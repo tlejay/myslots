@@ -82,9 +82,11 @@ export type CityId = (typeof CITIES)[number]['id']
 /**
  * How the host tells the app where they are: an event on their own calendar
  * whose title starts with this — "@ Uptown" all day, or "@ Uptown" 10:00–22:00
- * for part of one. A title naming a city that is not in CITIES ("@ Lisbon")
- * closes in-person booking for that stretch. These events are never busy time,
- * whether they are marked free or busy.
+ * for part of one. The rest of the title must be a city from CITIES and nothing
+ * else; those events are never busy time, whether they are marked free or busy.
+ * Any other title — "@ Lisbon", "@ Acme call", "@ Uptown (lunch)" — is an
+ * ordinary event and takes up time like one. Matched exactly: with '@ ',
+ * "@Uptown" is an ordinary event too.
  */
 export const LOCATION_EVENT_PREFIX = '@ '
 

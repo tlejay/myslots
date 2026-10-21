@@ -24,20 +24,24 @@ export function demoBusy(date: string): { start: string; end: string }[] {
 /**
  * Fake location events, so in person can be tried without a calendar. Every
  * week has one day in the second city, one that starts in the default and moves
- * there after lunch, and one out of town — the rest fall back to
- * DEFAULT_LOCATION. Keyed on the day number, so any seven days in a row hold
- * each kind once.
+ * there after lunch, and one in the second city with a trip back to the first
+ * from 10:00 to 12:00 — the rest fall back to DEFAULT_LOCATION. Keyed on the
+ * day number, so any seven days in a row hold each kind once.
  */
 export function demoLocations(date: string): { title: string; start: string; end: string }[] {
   const [y, m, d] = date.split('-').map(Number)
   const day = Math.floor(Date.UTC(y, m - 1, d) / 86_400_000)
   const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10)
+  const home = `${LOCATION_EVENT_PREFIX}${CITIES[0].label}`
   const away = `${LOCATION_EVENT_PREFIX}${(CITIES[1] ?? CITIES[0]).label}`
 
   switch (day % 7) {
     case 1: return [{ title: away, start: `${date}T00:00:00`, end: `${next}T00:00:00` }]
     case 3: return [{ title: away, start: `${date}T13:00:00`, end: `${next}T00:00:00` }]
-    case 5: return [{ title: `${LOCATION_EVENT_PREFIX}Out of town`, start: `${date}T00:00:00`, end: `${next}T00:00:00` }]
+    case 5: return [
+      { title: away, start: `${date}T00:00:00`, end: `${next}T00:00:00` },
+      { title: home, start: `${date}T10:00:00`, end: `${date}T12:00:00` },
+    ]
     default: return []
   }
 }
