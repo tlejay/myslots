@@ -104,7 +104,7 @@ function page({ subject, html }, replyTo, height) {
 const shots = [
   {
     file: 'booking-email.png',
-    height: 669,
+    height: 702,
     email: renderBookingCreated(
       sample, ctx,
       'https://calendar.google.com/calendar/u/0/r/eventedit/9k2m4x8vqp1n',
@@ -112,7 +112,7 @@ const shots = [
   },
   {
     file: 'booking-email-failure.png',
-    height: 683,
+    height: 716,
     // A failed booking never reached Google, so there is no Meet room to show.
     email: renderBookingFailed({ ...sample, meetLink: null }, ctx, 'invalid_grant: Token has been expired or revoked.'),
   },

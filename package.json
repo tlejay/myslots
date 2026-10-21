@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "token": "node scripts/get-refresh-token.mjs",
-    "mockup": "node scripts/render-email-mockup.mjs"
+    "mockup": "node scripts/render-email-mockup.mjs",
+    "check:booking": "node scripts/check-booking.mjs"
   },
   "dependencies": {
     "googleapis": "^171.4.0",

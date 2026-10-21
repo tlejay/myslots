@@ -1,11 +1,12 @@
 import {
-  BUFFER_AFTER_MINUTES,
-  BUFFER_BEFORE_MINUTES,
+  BUFFERS,
+  DEFAULT_MODE,
   MAX_DAYS_AHEAD,
   SLOT_STEP_MINUTES,
   TIME_ZONE,
   UTC_OFFSET,
   openHoursFor,
+  type MeetingMode,
 } from './config'
 
 // Wall-clock arithmetic for the booking calendar. Everything here works in the
@@ -26,26 +27,53 @@ export interface FreeWindow {
 }
 
 /**
- * Busy blocks grown by the meeting buffers. A new meeting needs its before-buffer
- * clear of whatever ends ahead of it, so each block's end moves later by that
- * much; likewise its start moves earlier by the after-buffer. Every slot check
- * can then stay a plain overlap test.
+ * What a busy block is, for the time kept clear around it (BUFFERS): `onsite`
+ * for an in-person meeting booked here, `other` for every other event, and
+ * `away` for a stretch the host is not in the city being booked — which has no
+ * buffer of its own, only the new meeting's.
  */
-export function withBuffers(busy: Interval[]): Interval[] {
-  return busy.map(b => ({
-    start: new Date(b.start.getTime() - BUFFER_AFTER_MINUTES * 60_000),
-    end: new Date(b.end.getTime() + BUFFER_BEFORE_MINUTES * 60_000),
-  }))
+export type BlockKind = 'onsite' | 'other' | 'away'
+
+export interface BusyBlock extends Interval {
+  /** Left out = `other`. */
+  kind?: BlockKind
+}
+
+function ownBuffers(kind: BlockKind = 'other') {
+  return kind === 'away' ? { before: 0, after: 0 } : BUFFERS[kind]
 }
 
 /**
+ * Busy blocks grown by the gap that must separate each one from the meeting
+ * being booked, so every slot check can stay a plain overlap test. Buffers do
+ * not stack: a meeting after a block needs the larger of the block's own
+ * after-buffer and the meeting's before-buffer, and the same the other way
+ * round. With 45 for in person, an in-person 14:00–15:00 grows to end at 15:45
+ * whichever kind is being booked.
+ */
+export function withBuffers(busy: BusyBlock[], mode: MeetingMode = DEFAULT_MODE): Interval[] {
+  const meeting = BUFFERS[mode]
+  return busy.map(b => {
+    const own = ownBuffers(b.kind)
+    return {
+      start: new Date(b.start.getTime() - Math.max(meeting.after, own.before) * 60_000),
+      end: new Date(b.end.getTime() + Math.max(own.after, meeting.before) * 60_000),
+    }
+  })
+}
+
+/** The widest gap any block can need on either side, in minutes. */
+const WIDEST_BUFFER = Math.max(...Object.values(BUFFERS).flatMap(b => [b.before, b.after]))
+
+/**
  * The raw lookup range that can hold a block which, once buffered, touches
- * [from, to).
+ * [from, to) — wide enough for the largest buffer of any kind, since what kind
+ * a block is only shows once it has been read.
  */
 export function bufferedLookupRange(from: Date, to: Date): Interval {
   return {
-    start: new Date(from.getTime() - BUFFER_BEFORE_MINUTES * 60_000),
-    end: new Date(to.getTime() + BUFFER_AFTER_MINUTES * 60_000),
+    start: new Date(from.getTime() - WIDEST_BUFFER * 60_000),
+    end: new Date(to.getTime() + WIDEST_BUFFER * 60_000),
   }
 }
 
@@ -57,6 +85,18 @@ export function dayOfWeek(dateKey: string): number {
 export function addDaysToKey(dateKey: string, n: number): string {
   const [y, m, d] = dateKey.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
+}
+
+/** `YYYY-MM-DD` and a day that exists — the pattern alone lets 2026-02-30 through. */
+export function isDateKey(value: unknown): value is string {
+  return typeof value === 'string' && DATE_KEY_RE.test(value) && addDaysToKey(value, 0) === value
+}
+
+/** Every date key from `from` to `to`, both included. */
+export function dateKeysBetween(from: string, to: string): string[] {
+  const keys: string[] = []
+  for (let d = from; d <= to; d = addDaysToKey(d, 1)) keys.push(d)
+  return keys
 }
 
 export function hhmm(minutes: number): string {
@@ -168,4 +208,53 @@ export function slotProblem(start: Date, durationMin: number, now = new Date()):
     return 'That time runs into the daily break'
   }
   return null
+}
+
+export type SlotReason = 'available' | 'busy' | 'past'
+
+export interface Slot {
+  start: string   // ISO instant
+  display: string // local HH:MM
+  available: boolean
+  reason: SlotReason
+}
+
+/**
+ * Every slot of `durationMin` on `dateKey`, marked against the calendar. `busy`
+ * must already carry the buffers of the kind of meeting being offered (see
+ * `withBuffers`), so this stays the same for online and in person.
+ */
+export function daySlots(dateKey: string, durationMin: number, busy: Interval[], now = new Date()): Slot[] {
+  const slots: Slot[] = []
+  // One pass per open stretch of the day, so nothing is offered that would run
+  // past closing time or across the daily break.
+  for (const { open, close } of openSegments(dateKey)) {
+    for (let m = open; m + durationMin <= close; m += SLOT_STEP_MINUTES) {
+      const slotStart = localInstant(dateKey, m)
+      const slotEnd = new Date(slotStart.getTime() + durationMin * 60_000)
+      const start = slotStart.toISOString()
+      const display = hhmm(m)
+
+      if (slotStart <= now) {
+        slots.push({ start, display, available: false, reason: 'past' })
+        continue
+      }
+      const overlaps = busy.some(b => slotStart < b.end && slotEnd > b.start)
+      slots.push({ start, display, available: !overlaps, reason: overlaps ? 'busy' : 'available' })
+    }
+  }
+  return slots
+}
+
+/**
+ * The journey either side of an in-person meeting, as the two stretches the
+ * booking endpoint puts on the calendar: one ending as the meeting starts, one
+ * starting as it ends.
+ */
+export function travelLegs(start: Date, end: Date): [Interval, Interval] {
+  const { before, after } = BUFFERS.onsite
+  return [
+    { start: new Date(start.getTime() - before * 60_000), end: start },
+    { start: end, end: new Date(end.getTime() + after * 60_000) },
+  ]
 }
